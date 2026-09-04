@@ -61,8 +61,11 @@ int main(int argc, char **argv)
     CHECK(astrosession_exp_name(7) == NULL, "exp_name past end");
 
     /* ROM import: a real BIOS passed as argv[1] must import; a bogus file
-     * must be rejected */
-    if (argc > 1) {
+     * must be rejected. argv[1] is always passed by CMake even when the
+     * ROM-less build's tools/roms is empty (as in CI), so an access() check
+     * -- not just argc -- decides whether a real BIOS is actually there. */
+    int have_bios = argc > 1 && access(argv[1], F_OK) == 0;
+    if (have_bios) {
         char name[64];
         int rc = astrosession_import_rom(s, argv[1], name, sizeof name);
         CHECK(rc == 0, "import real BIOS");
@@ -76,7 +79,11 @@ int main(int argc, char **argv)
         CHECK(astrosession_import_rom(s, bogus, NULL, 0) != 0,
               "reject non-BIOS file");
 
-        /* with a BIOS present, a start/stop cycle should run and paint */
+        /* with a BIOS present, a start/stop cycle should run and paint.
+         * argv[1] is astro.bin, so point default_opts back at it -- the
+         * settings round-trip check above left "bios" set to BALLYHLC,
+         * a variant this test never imports. */
+        astrosession_set_int(s, "bios", ASTROSESSION_BIOS_ASTRO);
         CHECK(astrosession_start(s, NULL) == 0, astrosession_last_error(s));
         if (astrosession_is_running(s)) {
             static uint32_t fb[ASTROSESSION_FB_WIDTH * ASTROSESSION_FB_HEIGHT];
@@ -91,7 +98,8 @@ int main(int argc, char **argv)
             astrosession_stop(s);
         }
     } else {
-        fprintf(stderr, "session_test: no BIOS arg -- skipping start/stop\n");
+        fprintf(stderr, "session_test: SKIP: no BIOS at %s -- skipping "
+                "start/stop\n", argc > 1 ? argv[1] : "(none)");
     }
 
     astrosession_free(s);
@@ -102,5 +110,6 @@ int main(int argc, char **argv)
     if (system(cmd)) { /* ignore */ }
 
     fprintf(stderr, "session_test: %s\n", failures ? "FAIL" : "PASS");
-    return failures ? 1 : 0;
+    if (failures) return 1;
+    return have_bios ? 0 : 77;
 }

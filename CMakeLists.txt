@@ -124,6 +124,9 @@ if(NOT WITH_ASTROCADE_ROMS)
                      "${CMAKE_SOURCE_DIR}/core/tests/no_embedded_roms.py"
                      "$<TARGET_FILE:${_t}>"
                      "${CMAKE_SOURCE_DIR}/tools/roms")
+    # SKIPs (ctest 77) rather than fails when tools/roms has no real ROMs to
+    # probe with -- true of every CI/release checkout, see no_embedded_roms.py.
+    set_tests_properties(no_embedded_roms_${_t} PROPERTIES SKIP_RETURN_CODE 77)
   endforeach()
 endif()
 

@@ -201,3 +201,4 @@ target_link_libraries(session_test astro_session)
 # dev ROM when present (SKIP-friendly: it just skips the start/stop otherwise).
 add_test(NAME session_test
          COMMAND session_test "${ASTRO_ROM_DIR_SRC}/astro.bin")
+set_tests_properties(session_test PROPERTIES SKIP_RETURN_CODE 77)
