@@ -131,10 +131,20 @@ add_library(astro_session STATIC
   src/bindings.c
   src/astro_keymap.c
   src/audio_sdl.c
+  src/fujinet_runtime.c
 )
 set_target_properties(astro_session PROPERTIES C_STANDARD 11)
 target_include_directories(astro_session PRIVATE src)
 target_link_libraries(astro_session PUBLIC astro_core PRIVATE SDL3::SDL3)
+# fujinet_runtime.c dlopen's libfujinet at run time (no link-time dependency,
+# so a -DWITH_FUJINET=OFF build still links). These tell paths_provision_
+# fujinet where to find the runtime and its asset tree.
+target_link_libraries(astro_session PRIVATE ${CMAKE_DL_LIBS})
+target_compile_definitions(astro_session PRIVATE
+  ASTRO_DEV_FUJINET_OUT="${CMAKE_SOURCE_DIR}/tools/fujinet/work/out"
+  ASTRO_INSTALL_DATADIR="${CMAKE_INSTALL_FULL_DATADIR}/fujinet-go-astrocade"
+  ASTRO_INSTALL_LIBDIR="${CMAKE_INSTALL_FULL_LIBDIR}/fujinet-go-astrocade"
+)
 # -Wno-format-truncation: the path buffers are ASTRO_PATH_MAX and the compiler
 # can't prove the "%s/settings.ini" suffix fits -- it does (the dirs are
 # bounded well under that), and a truncated path just fails to open, harmless.

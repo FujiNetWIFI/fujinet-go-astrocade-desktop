@@ -63,7 +63,27 @@ M3 — GNOME frontend + keypad + ROM import  [x]
       (desktop-file-validate, appstreamcli --pedantic ctests).
   verify: ran on live Wayland (grim) -- BIOS boots to SELECT GAME with FUJINET
       CONFIG as entry 1; keypad window matches the reference photo. Full ctest 9/9.
-M4 — FujiNet end-to-end (runtime build, ports 11500/11501, boot swap)  [ ]
+M4 — FujiNet end-to-end (runtime build, ports 11500/11501, boot swap)  [x]
+  [x] tools/fujinet/build-fujinet-desktop.sh + support/fujinet_desktop_entry.cpp
+      + patches/ transposed from the Intv port (target-agnostic); PC_TARGET=
+      RS232, force_boip_config port 11500. Builds libfujinet.so (6 MB) from the
+      astrocade-bringup branch -- verified (firmware's own tests pass).
+  [x] cmake/FujiNetRuntime.cmake (real): WITH_FUJINET builds + installs the
+      runtime; the add_custom_command drives the script. dev/install path
+      resolution via ASTRO_DEV_FUJINET_OUT / ASTRO_INSTALL_{LIB,DATA}DIR.
+  [x] core/src/fujinet_runtime.c: dlopen libfujinet (never dlclose), start/
+      stop, wait_for_boip, copy_log; FUJINET_WEBUI_BIND=11501, FUJINET_RUNTIME_
+      ROOT set. paths_provision_fujinet copies fnconfig.ini+data+SD into
+      <data>/fujinet on first run. session_start brings FujiNet up first then
+      waits <=3s for the BoIP listener before the emulator dials in.
+  [x] fixed resolve_lib_dir loop terminating on a NULL getenv (skip, not stop).
+  verify: the GNOME app itself LISTENS on 127.0.0.1:11500 (BoIP) and :11501
+      (web UI, HTTP 200); the log shows "BoIPChannel connected" + "fujinet:
+      connected to 127.0.0.1:11500" -- the emulator's cart dials into its own
+      in-process FujiNet. session_test exercises the real startup. ctest 10/10.
+  TODO: boot-swap/stream end-to-end needs a TNFS host to fully exercise; the
+      protocol path is already corpus-verified upstream. FujiNet Console Log
+      viewer menu item (function exists) -- minor follow-up.
 
 M5 — debugger (Z80 tab + video-chip tab; all registers)  [x]
   [x] engine (core/debugger/debugger.c): instruction-hook based, pause blocks

@@ -139,6 +139,10 @@ const char *astrosession_cart_path(astrosession *s);
  * the page simply won't load until FujiNet is listening. */
 const char *astrosession_fujinet_webui_url(astrosession *s);
 
+/* Copy the FujiNet runtime's recent console log into dst (for a log viewer).
+ * Returns bytes written; 0 when the runtime is not loaded. */
+int astrosession_fujinet_copy_log(astrosession *s, char *dst, int max);
+
 /* RESET TO CONFIG: clear the persisted cartridge and restart, booting the
  * FujiNet cart's baked CONFIG client -- the only way back to CONFIG once a
  * booted image has taken over the mailbox for the session. 0 / -1+error. */

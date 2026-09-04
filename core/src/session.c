@@ -158,6 +158,12 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
         }
     }
 
+    /* Bring FujiNet up first (best-effort) and wait briefly for its BoIP
+     * listener, so the emulator's first cart dial-out finds it. A failure is
+     * non-fatal: the mailbox runs link-down and the CONFIG client says so. */
+    if (fujinet_start(s) == 0)
+        fujinet_wait_for_boip(s, 3000);
+
     astro_host_opts_t hopts = {
         .bios = s->bios,
         .cart = cart,
@@ -183,6 +189,7 @@ void astrosession_stop(astrosession *s)
         return;
     audio_stop(s);
     astro_host_stop();
+    fujinet_stop(s);
     s->running = 0;
 }
 

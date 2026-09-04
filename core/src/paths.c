@@ -9,6 +9,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,28 @@
 #if defined(_WIN32)
 #include <direct.h>
 #include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+/* Compiled-in locations (set by CMake), so a git checkout runs uninstalled
+ * and an installed copy finds its runtime beside the executable / in libdir. */
+#ifndef ASTRO_DEV_FUJINET_OUT
+#define ASTRO_DEV_FUJINET_OUT ""
+#endif
+#ifndef ASTRO_INSTALL_DATADIR
+#define ASTRO_INSTALL_DATADIR ""
+#endif
+#ifndef ASTRO_INSTALL_LIBDIR
+#define ASTRO_INSTALL_LIBDIR ""
+#endif
+
+#if defined(__APPLE__)
+#define ASTRO_FUJINET_LIB_NAME "libfujinet.dylib"
+#elif defined(_WIN32)
+#define ASTRO_FUJINET_LIB_NAME "fujinet.dll"
+#else
+#define ASTRO_FUJINET_LIB_NAME "libfujinet.so"
 #endif
 
 static int is_sep(char c)
@@ -108,6 +131,15 @@ int paths_init(struct astrosession *s, const char *config_dir,
     snprintf(s->settings_file, sizeof s->settings_file, "%s/settings.ini",
              s->config_dir);
 
+    /* FujiNet runtime tree lives under the data dir; the web UI is fixed. */
+    snprintf(s->fujinet_root, sizeof s->fujinet_root, "%s/fujinet", s->data_dir);
+    snprintf(s->fujinet_config, sizeof s->fujinet_config, "%s/fnconfig.ini",
+             s->fujinet_root);
+    snprintf(s->fujinet_sd, sizeof s->fujinet_sd, "%s/SD", s->fujinet_root);
+    snprintf(s->fujinet_data, sizeof s->fujinet_data, "%s/data", s->fujinet_root);
+    snprintf(s->webui_url, sizeof s->webui_url, "http://127.0.0.1:%d/",
+             ASTROSESSION_WEBUI_PORT);
+
     if (mkdir_p(s->config_dir) != 0) {
         session_set_error(s, "cannot create config dir %s", s->config_dir);
         return -1;
@@ -119,6 +151,110 @@ int paths_init(struct astrosession *s, const char *config_dir,
     if (mkdir_p(s->roms_dir) != 0) {
         session_set_error(s, "cannot create ROM dir %s", s->roms_dir);
         return -1;
+    }
+    return 0;
+}
+
+/* ---- FujiNet runtime provisioning ---- */
+
+static int is_file(const char *p)
+{
+    struct stat st;
+    return p && *p && stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static int copy_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[65536];
+    size_t n;
+    int rc = 0;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0)
+        if (fwrite(buf, 1, n, out) != n) { rc = -1; break; }
+    if (ferror(in)) rc = -1;
+    fclose(in);
+    if (fclose(out) != 0) rc = -1;
+    return rc;
+}
+
+static int copy_tree(const char *src, const char *dst)
+{
+    if (mkdir_p(dst) != 0) return -1;
+    DIR *d = opendir(src);
+    if (!d) return -1;
+    struct dirent *e;
+    int rc = 0;
+    while ((e = readdir(d)) != NULL) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char from[ASTRO_PATH_MAX], to[ASTRO_PATH_MAX];
+        snprintf(from, sizeof from, "%s/%s", src, e->d_name);
+        snprintf(to, sizeof to, "%s/%s", dst, e->d_name);
+        struct stat st;
+        if (stat(from, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) rc |= copy_tree(from, to);
+        else if (S_ISREG(st.st_mode)) rc |= copy_file(from, to);
+    }
+    closedir(d);
+    return rc;
+}
+
+/* Try each candidate directory for libfujinet; on success set s->fujinet_lib
+ * and return the directory (which also holds the runtime asset tree). */
+static const char *resolve_lib_dir(struct astrosession *s)
+{
+    static char dir[ASTRO_PATH_MAX];
+    const char *candidates[] = {
+        getenv("FUJINET_LIB_DIR"),   /* may be NULL -- skipped, not terminal */
+        ASTRO_DEV_FUJINET_OUT,
+        ASTRO_INSTALL_LIBDIR,
+    };
+    const int n = (int)(sizeof candidates / sizeof candidates[0]);
+    for (int i = 0; i < n; i++) {
+        if (!candidates[i] || !*candidates[i]) continue;
+        char lib[ASTRO_PATH_MAX];
+        snprintf(lib, sizeof lib, "%s/%s", candidates[i], ASTRO_FUJINET_LIB_NAME);
+        if (is_file(lib)) {
+            snprintf(s->fujinet_lib, sizeof s->fujinet_lib, "%s", lib);
+            snprintf(dir, sizeof dir, "%s", candidates[i]);
+            return dir;
+        }
+    }
+    /* an explicit full path to the library */
+    const char *libenv = getenv("FUJINET_LIB");
+    if (libenv && is_file(libenv)) {
+        snprintf(s->fujinet_lib, sizeof s->fujinet_lib, "%s", libenv);
+        return "";   /* assets come from the install datadir below */
+    }
+    return NULL;
+}
+
+int paths_provision_fujinet(struct astrosession *s)
+{
+    const char *libdir = resolve_lib_dir(s);
+    if (!libdir && !*s->fujinet_lib) {
+        session_set_error(s, "libfujinet not found (build with WITH_FUJINET=ON "
+                          "or set FUJINET_LIB_DIR)");
+        return -1;
+    }
+
+    /* Where the pristine runtime assets live: beside the library in a dev
+     * build, or the install datadir otherwise. */
+    const char *asset_src = (libdir && *libdir) ? libdir
+                                                : ASTRO_INSTALL_DATADIR "/fujinet";
+
+    /* First run: copy fnconfig.ini + data/ + SD/ into the user's tree. */
+    if (!is_file(s->fujinet_config)) {
+        char src[ASTRO_PATH_MAX];
+        mkdir_p(s->fujinet_root);
+        snprintf(src, sizeof src, "%s/fnconfig.ini", asset_src);
+        if (is_file(src)) copy_file(src, s->fujinet_config);
+        snprintf(src, sizeof src, "%s/data", asset_src);
+        copy_tree(src, s->fujinet_data);
+        snprintf(src, sizeof src, "%s/SD", asset_src);
+        copy_tree(src, s->fujinet_sd);
     }
     return 0;
 }

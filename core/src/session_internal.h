@@ -35,6 +35,15 @@ struct astrosession {
     char boip_hostport[64];   /* "127.0.0.1:11500" -- handed to the cart */
     char last_error[256];
 
+    /* ---- FujiNet runtime (fujinet_runtime.c) ---- */
+    char fujinet_root[ASTRO_PATH_MAX];    /* <data>/fujinet */
+    char fujinet_config[ASTRO_PATH_MAX];  /* .../fnconfig.ini */
+    char fujinet_sd[ASTRO_PATH_MAX];      /* .../SD */
+    char fujinet_data[ASTRO_PATH_MAX];    /* .../data */
+    char fujinet_lib[ASTRO_PATH_MAX];     /* resolved libfujinet path, "" until then */
+    char webui_url[64];                   /* http://127.0.0.1:11501/ */
+    int  fujinet_running;
+
     /* cross-thread system-action latch (see astrosession_sysaction_post) */
     pthread_mutex_t sysact_mtx;
     unsigned sysact_pending;
@@ -52,8 +61,19 @@ void settings_free_all(struct astrosession *s);
 
 int paths_init(struct astrosession *s, const char *config_dir,
                const char *data_dir);
+/* Locate libfujinet and provision the runtime tree (fnconfig.ini + data/ +
+ * SD/) into <data>/fujinet on first run. Returns 0, or -1 if no runtime is
+ * available (not fatal to the session -- see fujinet_start). */
+int paths_provision_fujinet(struct astrosession *s);
 
 void session_set_error(struct astrosession *s, const char *fmt, ...);
+
+/* fujinet_runtime.c */
+int  fujinet_start(struct astrosession *s);
+void fujinet_stop(struct astrosession *s);
+/* Block (up to timeout_ms) until the BoIP port accepts, so the emulator's
+ * first dial-out finds the listener. Returns 0 once up, -1 on timeout. */
+int  fujinet_wait_for_boip(struct astrosession *s, int timeout_ms);
 
 /* roms.c -- BIOS resolution and import. */
 /* Loads the requested BIOS variant into a freshly malloc'd ASTRO_BIOS_SIZE
