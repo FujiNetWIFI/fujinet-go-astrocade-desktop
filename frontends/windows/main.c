@@ -19,6 +19,7 @@
 
 #include "astrosession.h"
 #include "bindings.h"
+#include "debugger/dbg_window.h"
 #include "key_forward.h"
 #include "resource.h"
 
@@ -81,6 +82,57 @@ static LRESULT CALLBACK key_btn_proc(HWND h, UINT msg, WPARAM w, LPARAM l)
 }
 
 static void sysact_click(int a) { astrosession_sysaction_fire(g_session, (astrosession_sysaction)a); }
+
+/* ---- FujiNet console log window ---- */
+
+static HWND g_log_window, g_log_edit;
+
+static LRESULT CALLBACK log_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
+{
+    switch (msg) {
+    case WM_SIZE:
+        MoveWindow(g_log_edit, 0, 0, LOWORD(l), HIWORD(l), TRUE);
+        return 0;
+    case WM_TIMER: {
+        static char buf[16384];
+        astrosession_fujinet_copy_log(g_session, buf, sizeof buf);
+        SetWindowTextA(g_log_edit, buf);
+        return 0;
+    }
+    case WM_CLOSE:
+        KillTimer(hwnd, 2);
+        DestroyWindow(hwnd);
+        g_log_window = NULL;
+        return 0;
+    }
+    return DefWindowProc(hwnd, msg, w, l);
+}
+
+static void show_log(void)
+{
+    if (g_log_window) { SetForegroundWindow(g_log_window); return; }
+    static int registered;
+    HINSTANCE inst = GetModuleHandle(NULL);
+    if (!registered) {
+        WNDCLASSA wc; ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = log_proc; wc.hInstance = inst;
+        wc.lpszClassName = "AstroLog";
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        RegisterClassA(&wc);
+        registered = 1;
+    }
+    g_log_window = CreateWindowA("AstroLog", "FujiNet Console Log",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 700, 500,
+        g_hwnd, NULL, inst, NULL);
+    g_log_edit = CreateWindowA("EDIT", "",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        0, 0, 700, 500, g_log_window, NULL, inst, NULL);
+    HFONT mono = (HFONT)GetStockObject(ANSI_FIXED_FONT);
+    SendMessage(g_log_edit, WM_SETFONT, (WPARAM)mono, TRUE);
+    ShowWindow(g_log_window, SW_SHOW);
+    SetTimer(g_log_window, 2, 1000, NULL);
+    SendMessage(g_log_window, WM_TIMER, 2, 0);
+}
 
 static LRESULT CALLBACK keypad_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
 {
@@ -206,11 +258,15 @@ static void do_command(int id)
         }
         break;
     case IDM_KEYPAD:        toggle_keypad(); break;
+    case IDM_DEBUGGER:      astro_debugger_show(g_hwnd); break;
     case IDM_RESET_GAME:    astrosession_reset_game(g_session); break;
     case IDM_RESET_CONFIG:  astrosession_reset_to_config(g_session); break;
     case IDM_FUJINET_CONFIG:
         ShellExecuteA(NULL, "open", astrosession_fujinet_webui_url(g_session),
                       NULL, NULL, SW_SHOWNORMAL);
+        break;
+    case IDM_FUJINET_LOG:
+        show_log();
         break;
     case IDM_ABOUT:
         MessageBoxA(g_hwnd,
@@ -237,12 +293,14 @@ static HMENU build_menu(void)
 
     HMENU view = CreatePopupMenu();
     AppendMenuA(view, MF_STRING, IDM_KEYPAD, "&Keypad\tF9");
+    AppendMenuA(view, MF_STRING, IDM_DEBUGGER, "&Debugger\tF12");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)view, "&View");
 
     HMENU fn = CreatePopupMenu();
     AppendMenuA(fn, MF_STRING, IDM_RESET_GAME, "Reset &Game");
     AppendMenuA(fn, MF_STRING, IDM_RESET_CONFIG, "Reset to &CONFIG");
     AppendMenuA(fn, MF_STRING, IDM_FUJINET_CONFIG, "FujiNet &Configuration...");
+    AppendMenuA(fn, MF_STRING, IDM_FUJINET_LOG, "FujiNet Console &Log...");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)fn, "&FujiNet");
 
     HMENU help = CreatePopupMenu();
@@ -261,6 +319,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
         return 0;
     case WM_KEYDOWN:
         if (w == VK_F9) { toggle_keypad(); return 0; }
+        if (w == VK_F12) { astro_debugger_show(g_hwnd); return 0; }
         if (!(l & 0x40000000))   /* ignore auto-repeat */
             forward_key(astro_keysym_from_vk(w), 1);
         return 0;
@@ -328,6 +387,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     ShowWindow(g_hwnd, show);
     SetTimer(g_hwnd, 1, 16, NULL);   /* ~60 Hz repaint poll */
+
+    /* developer affordances, matching the GNOME/KDE ports */
+    if (getenv("ASTRO_OPEN_DEBUGGER"))
+        astro_debugger_show(g_hwnd);
+    if (getenv("ASTRO_OPEN_KEYPAD"))
+        toggle_keypad();
 
     MSG m;
     while (GetMessage(&m, NULL, 0, 0)) {

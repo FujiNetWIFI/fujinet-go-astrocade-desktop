@@ -15,6 +15,7 @@ configure_file(app.manifest.in "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" @ONLY)
 
 add_executable(fujinet-go-astrocade-windows WIN32
   main.c
+  debugger/dbg_window.c
   resource.rc
 )
 # The core is all C (unlike the sibling ports whose emulator had a C++ TU), so

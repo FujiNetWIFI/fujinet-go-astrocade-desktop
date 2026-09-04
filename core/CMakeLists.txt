@@ -131,6 +131,7 @@ add_library(astro_session STATIC
   src/bindings.c
   src/astro_keymap.c
   src/audio_sdl.c
+  src/gamepad_sdl.c
   src/fujinet_runtime.c
 )
 set_target_properties(astro_session PROPERTIES C_STANDARD 11)
@@ -188,6 +189,11 @@ add_executable(bindings_test tests/bindings_test.c)
 target_link_libraries(bindings_test astro_session)
 target_include_directories(bindings_test PRIVATE src)
 add_test(NAME bindings_test COMMAND bindings_test)
+
+add_executable(gamepad_test tests/gamepad_test.c)
+target_link_libraries(gamepad_test astro_session)
+target_include_directories(gamepad_test PRIVATE src)
+add_test(NAME gamepad_test COMMAND gamepad_test)
 
 add_executable(session_test tests/session_test.c)
 target_link_libraries(session_test astro_session)

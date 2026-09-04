@@ -16,12 +16,17 @@
 #include "SettingsDialog.h"
 
 #include <QDesktopServices>
+#include <QDialog>
 #include <QFileDialog>
+#include <QFont>
 #include <QKeyEvent>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QStatusBar>
+#include <QTimer>
 #include <QUrl>
+#include <QVBoxLayout>
 
 extern "C" {
 #include "bindings.h"
@@ -104,6 +109,7 @@ void MainWindow::buildMenus()
         QDesktopServices::openUrl(
             QUrl(astrosession_fujinet_webui_url(m_session)));
     });
+    fujinet->addAction("FujiNet Console Log…", this, [this] { showFujinetLog(); });
 
     auto *help = menuBar()->addMenu("&Settings");
     help->addAction("Preferences…", this, [this] {
@@ -116,6 +122,34 @@ void MainWindow::buildMenus()
             "Self-contained Bally Astrocade with built-in FujiNet.\n"
             "GPL-3.0-or-later · https://fujinet.online/");
     });
+}
+
+void MainWindow::showFujinetLog()
+{
+    /* a non-modal window with a monospace read-only view refreshed each
+     * second; owned by the main window so it closes with it */
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle("FujiNet Console Log");
+    dlg->resize(700, 500);
+    auto *layout = new QVBoxLayout(dlg);
+    auto *view = new QPlainTextEdit;
+    view->setReadOnly(true);
+    QFont f("monospace");
+    f.setStyleHint(QFont::TypeWriter);
+    view->setFont(f);
+    layout->addWidget(view);
+
+    auto refresh = [this, view] {
+        char buf[16384];
+        astrosession_fujinet_copy_log(m_session, buf, sizeof buf);
+        view->setPlainText(buf);
+    };
+    refresh();
+    auto *timer = new QTimer(dlg);
+    QObject::connect(timer, &QTimer::timeout, dlg, refresh);
+    timer->start(1000);
+    dlg->show();
 }
 
 void MainWindow::forwardKey(int keysym, bool down)

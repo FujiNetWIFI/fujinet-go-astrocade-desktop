@@ -11,6 +11,7 @@
 #import "AppDelegate.h"
 
 #import "AstroKeyForward.h"
+#import "DebuggerWindow.h"
 #import "DisplayView.h"
 
 #include "bindings.h"
@@ -115,6 +116,7 @@
     [menubar addItem:viewItem];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
     [view addItemWithTitle:@"Keypad" action:@selector(toggleKeypad:) keyEquivalent:@""].target = self;
+    [view addItemWithTitle:@"Debugger" action:@selector(showDebugger:) keyEquivalent:@""].target = self;
     viewItem.submenu = view;
 
     NSMenuItem *fnItem = [[NSMenuItem alloc] init];
@@ -124,6 +126,8 @@
     [fn addItemWithTitle:@"Reset to CONFIG" action:@selector(resetConfig:) keyEquivalent:@"r"].target = self;
     [fn addItemWithTitle:@"FujiNet Configuration…"
                   action:@selector(fujinetConfig:) keyEquivalent:@""].target = self;
+    [fn addItemWithTitle:@"FujiNet Console Log…"
+                  action:@selector(fujinetLog:) keyEquivalent:@""].target = self;
     fnItem.submenu = fn;
 }
 
@@ -165,6 +169,7 @@
     }
 }
 
+- (void)showDebugger:(id)sender { (void)sender; [DebuggerWindow showDebugger]; }
 - (void)resetGame:(id)sender { (void)sender; astrosession_reset_game(_session); }
 - (void)resetConfig:(id)sender { (void)sender; astrosession_reset_to_config(_session); }
 
@@ -173,6 +178,46 @@
     (void)sender;
     NSString *url = @(astrosession_fujinet_webui_url(_session));
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
+}
+
+- (void)fujinetLog:(id)sender
+{
+    (void)sender;
+    NSWindow *w = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, 700, 500)
+                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                             NSWindowStyleMaskResizable)
+                    backing:NSBackingStoreBuffered defer:NO];
+    w.title = @"FujiNet Console Log";
+    w.releasedWhenClosed = NO;
+    [w center];
+
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:w.contentView.bounds];
+    scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    scroll.hasVerticalScroller = YES;
+    NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.bounds];
+    text.editable = NO;
+    text.font = [NSFont userFixedPitchFontOfSize:11];
+    text.autoresizingMask = NSViewWidthSizable;
+    scroll.documentView = text;
+    w.contentView = scroll;
+
+    astrosession *sess = _session;
+    void (^refresh)(void) = ^{
+        char buf[16384];
+        astrosession_fujinet_copy_log(sess, buf, sizeof buf);
+        text.string = @(buf);
+    };
+    refresh();
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                     repeats:YES
+                                                       block:^(NSTimer *t) {
+                                                         (void)t; refresh();
+                                                       }];
+    /* stop the timer when the window closes */
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification
+        object:w queue:nil usingBlock:^(NSNotification *n) { (void)n; [timer invalidate]; }];
+    [w makeKeyAndOrderFront:nil];
 }
 
 /* ---- keypad window ---- */

@@ -30,6 +30,7 @@ private:
     void forwardKey(int keysym, bool down);
     void restartSession();
     void showToast(const QString &msg);
+    void showFujinetLog();
 
     astrosession *m_session;
     DisplayWidget *m_display = nullptr;

@@ -15,6 +15,7 @@
 
 #include "astro_internal.h"
 #include "bindings.h"
+#include "gamepad_sdl.h"
 #include "host.h"
 #include "session_internal.h"
 
@@ -179,6 +180,7 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
     }
 
     audio_start(s);             /* best-effort; silent if no device */
+    astro_gamepad_start(s);     /* best-effort; no-op without a gamepad */
     s->running = 1;
     return 0;
 }
@@ -187,6 +189,7 @@ void astrosession_stop(astrosession *s)
 {
     if (!s->running)
         return;
+    astro_gamepad_stop();
     audio_stop(s);
     astro_host_stop();
     fujinet_stop(s);

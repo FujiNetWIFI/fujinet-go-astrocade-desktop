@@ -237,6 +237,47 @@ static void action_fujinet_config(GSimpleAction *a, GVariant *p, gpointer user_d
     g_object_unref(launcher);
 }
 
+/* The FujiNet console log: a monospace read-only view refreshed on a 1 s
+ * timer from the runtime's own recent-log ring. */
+static gboolean log_refresh(gpointer text_view)
+{
+    if (!GTK_IS_TEXT_VIEW(text_view))
+        return G_SOURCE_REMOVE;
+    AstroWindow *self = g_object_get_data(G_OBJECT(text_view), "astro-window");
+    char buf[16384];
+    astrosession_fujinet_copy_log(self->session, buf, sizeof buf);
+    GtkTextBuffer *tbuf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    gtk_text_buffer_set_text(tbuf, buf, -1);
+    return G_SOURCE_CONTINUE;
+}
+
+static void action_fujinet_log(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
+    AstroWindow *self = ASTRO_WINDOW(user_data);
+    (void)a; (void)p;
+
+    GtkWidget *dialog = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(dialog), "FujiNet Console Log");
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 700, 500);
+    gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(self));
+
+    GtkWidget *view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+    g_object_set_data(G_OBJECT(view), "astro-window", self);
+
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), view);
+    gtk_window_set_child(GTK_WINDOW(dialog), scroll);
+
+    log_refresh(view);
+    guint id = g_timeout_add(1000, log_refresh, view);
+    /* stop the timer when the window (and its view) go away */
+    g_signal_connect_swapped(dialog, "destroy",
+                             G_CALLBACK(g_source_remove), GUINT_TO_POINTER(id));
+    gtk_window_present(GTK_WINDOW(dialog));
+}
+
 static void action_debugger(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
@@ -274,6 +315,7 @@ static const GActionEntry win_actions[] = {
     {.name = "import-rom", .activate = action_import_rom},
     {.name = "open-cart", .activate = action_open_cart},
     {.name = "fujinet-config", .activate = action_fujinet_config},
+    {.name = "fujinet-log", .activate = action_fujinet_log},
     {.name = "debugger", .activate = action_debugger},
     {.name = "preferences", .activate = action_preferences},
     {.name = "about", .activate = action_about},
@@ -318,6 +360,7 @@ static GMenu *build_menu(void)
     g_menu_append(fujinet, "Reset Game (Backspace)", "win.reset-game");
     g_menu_append(fujinet, "Reset to CONFIG (Ctrl+R)", "win.reset-config");
     g_menu_append(fujinet, "FujiNet Configuration…", "win.fujinet-config");
+    g_menu_append(fujinet, "FujiNet Console Log…", "win.fujinet-log");
     g_menu_append_section(menu, "FujiNet", G_MENU_MODEL(fujinet));
 
     g_menu_append(tail, "Preferences…", "win.preferences");

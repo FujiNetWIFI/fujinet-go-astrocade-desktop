@@ -230,6 +230,17 @@ enum {
 /* Returns the keypad key for a keysym under the default binding, or -1. */
 int astrosession_key_from_keysym(int keysym);
 
+/* ---- gamepad-button capture, for the keypad window's Map mode ------------
+ * A frontend arming a remap to a gamepad button calls _begin, then polls
+ * _poll on a UI timer (SDL gamepad events land on the session's own poll
+ * thread, not the UI thread); _poll returns 1 with *button set (an
+ * SDL_GamepadButton index) once a button is pressed, then disarms. _cancel
+ * disarms without capturing. While armed, the poll thread records the press
+ * instead of injecting it, so binding a button can't also drive the machine. */
+void astrosession_gamepad_capture_begin(astrosession *s);
+int  astrosession_gamepad_capture_poll(astrosession *s, int *button);
+void astrosession_gamepad_capture_cancel(astrosession *s);
+
 #ifdef __cplusplus
 }
 #endif
