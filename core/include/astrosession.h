@@ -133,6 +133,12 @@ const char *astrosession_last_error(const astrosession *s);
 int astrosession_load_cart(astrosession *s, const char *path);
 const char *astrosession_cart_path(astrosession *s);
 
+/* The FujiNet web admin UI URL ("http://127.0.0.1:11501/"). A frontend opens
+ * this in the system browser (never an embedded webview -- the config pages'
+ * OAuth/JS flows need a real browser). Valid whether or not the runtime is up;
+ * the page simply won't load until FujiNet is listening. */
+const char *astrosession_fujinet_webui_url(astrosession *s);
+
 /* RESET TO CONFIG: clear the persisted cartridge and restart, booting the
  * FujiNet cart's baked CONFIG client -- the only way back to CONFIG once a
  * booted image has taken over the mailbox for the session. 0 / -1+error. */

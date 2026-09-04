@@ -204,6 +204,16 @@ const char *astrosession_cart_path(astrosession *s)
     return astrosession_get_str(s, "cart", "");
 }
 
+const char *astrosession_fujinet_webui_url(astrosession *s)
+{
+    (void)s;
+    static const char url[] = "http://127.0.0.1:11501/";
+    /* ASTROSESSION_WEBUI_PORT is 11501; kept as a literal so the string is
+     * constant, with a compile-time check that they agree. */
+    _Static_assert(ASTROSESSION_WEBUI_PORT == 11501, "webui url/port mismatch");
+    return url;
+}
+
 int astrosession_reset_to_config(astrosession *s)
 {
     return astrosession_load_cart(s, NULL);
