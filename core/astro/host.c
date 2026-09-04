@@ -212,6 +212,26 @@ static long ts_diff_ns(const struct timespec *a, const struct timespec *b)
     return (a->tv_sec - b->tv_sec) * 1000000000L + (a->tv_nsec - b->tv_nsec);
 }
 
+/* Sleep until the absolute deadline `next` (with `now` already sampled).
+ * clock_nanosleep(TIMER_ABSTIME) is the right tool on POSIX, but it is a
+ * no-op under mingw/Wine (the emulator then free-ran at thousands of fps in
+ * the Windows build -- the sibling ports' "verify the throttle per platform"
+ * lesson), so Windows uses a plain relative nanosleep, which winpthreads
+ * honours. */
+static void sleep_until(const struct timespec *next, const struct timespec *now)
+{
+#if defined(_WIN32)
+    long remain = ts_diff_ns(next, now);
+    if (remain <= 0)
+        return;
+    struct timespec rel = { remain / 1000000000L, remain % 1000000000L };
+    nanosleep(&rel, NULL);
+#else
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, next, NULL);
+    (void)now;
+#endif
+}
+
 static void *machine_thread(void *arg)
 {
     (void)arg;
@@ -254,7 +274,7 @@ static void *machine_thread(void *arg)
         if (behind > 4 * frame_ns)
             next = now;
         else if (behind < 0)
-            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+            sleep_until(&next, &now);
     }
 
     return NULL;
