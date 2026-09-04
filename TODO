@@ -133,7 +133,23 @@ M7 — Linux packaging (DEB/RPM/TGZ + 2 flatpaks)  [x]
       AppStream metadata composed). Pin recorded in 3 places (Dependencies +
       both manifests).
 
-M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [ ]
+M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [x]
+  [x] core: fujitcp_win32.c (Winsock twin) + portable pacing -- verified under
+      Wine (boot_smoke.exe: BIOS boots, 60 fps).
+  [x] Win32/GDI frontend (main.c): StretchDIBits display (4:3 letterbox),
+      menu (Open Cartridge / Import ROM / Keypad / Reset Game / Reset to
+      CONFIG / FujiNet Configuration -> ShellExecute browser / About), keyboard
+      capture via the bound table, a keypad child window (buttons subclassed
+      for press/release, System row), key_forward.h (VK -> keysym).
+  [x] resource.rc + app.manifest.in (comctl6 + DPI aware), CMakeLists (WIN32
+      exe, -static-libgcc, SDL3.dll the only loose DLL), mingw-w64 toolchain,
+      NSIS per-user installer (build-aux/windows/installer.nsi).
+  verify: cross-compiled with mingw-w64 (prebuilt SDL3) and run under Wine --
+      a native Win32 window with the Machine/View/FujiNet/Help menu renders
+      the SELECT GAME display. All three desktop targets (GNOME/KDE/Windows)
+      now verified on this machine.
+  TODO: Win32 debugger window (engine is done; GUI is a follow-up).
+
 M9 — macOS (AppKit bundle)  [ ]
 M10 — CI + release  [ ]
 
