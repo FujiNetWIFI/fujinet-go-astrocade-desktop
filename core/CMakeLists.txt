@@ -112,6 +112,31 @@ set_target_properties(astro_roms PROPERTIES C_STANDARD 11
 target_include_directories(astro_roms PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/astro")
 target_link_libraries(astro_core PUBLIC astro_roms)
 
+# ---- astro_session: the toolkit-agnostic session API (astrosession.h) ------
+# A SEPARATE target from astro_core, not more files bolted onto it: audio_sdl.c
+# needs SDL3, and astro_core's whole point is staying SDL-free (verified by
+# no_sdl_link_test, which links astro_core alone). Were audio_sdl.c added
+# directly to astro_core, every consumer of that archive would pick up an SDL3
+# runtime dependency whether or not it plays audio.
+find_package(SDL3 CONFIG REQUIRED)
+
+add_library(astro_session STATIC
+  src/settings.c
+  src/paths.c
+  src/roms.c
+  src/session.c
+  src/bindings.c
+  src/astro_keymap.c
+  src/audio_sdl.c
+)
+set_target_properties(astro_session PROPERTIES C_STANDARD 11)
+target_include_directories(astro_session PRIVATE src)
+target_link_libraries(astro_session PUBLIC astro_core PRIVATE SDL3::SDL3)
+# -Wno-format-truncation: the path buffers are ASTRO_PATH_MAX and the compiler
+# can't prove the "%s/settings.ini" suffix fits -- it does (the dirs are
+# bounded well under that), and a truncated path just fails to open, harmless.
+target_compile_options(astro_session PRIVATE -Wall -Wextra -Wno-format-truncation)
+
 # ---- tests -----------------------------------------------------------------
 add_executable(boot_smoke tests/boot_smoke.c)
 target_link_libraries(boot_smoke astro_core)
@@ -135,3 +160,20 @@ set_tests_properties(boot_smoke PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME funcgen_test COMMAND funcgen_test)
 add_test(NAME keypad_matrix_test COMMAND keypad_matrix_test)
 add_test(NAME mapper_test COMMAND mapper_test)
+
+# astro_core must carry no SDL: this links it ALONE.
+add_executable(no_sdl_link_test tests/no_sdl_link_test.c)
+target_link_libraries(no_sdl_link_test astro_core)
+add_test(NAME no_sdl_link_test COMMAND no_sdl_link_test)
+
+add_executable(bindings_test tests/bindings_test.c)
+target_link_libraries(bindings_test astro_session)
+target_include_directories(bindings_test PRIVATE src)
+add_test(NAME bindings_test COMMAND bindings_test)
+
+add_executable(session_test tests/session_test.c)
+target_link_libraries(session_test astro_session)
+# session_test exercises a real start/stop when handed a BIOS; point it at the
+# dev ROM when present (SKIP-friendly: it just skips the start/stop otherwise).
+add_test(NAME session_test
+         COMMAND session_test "${ASTRO_ROM_DIR_SRC}/astro.bin")
