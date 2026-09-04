@@ -201,6 +201,33 @@ static int copy_tree(const char *src, const char *dst)
     return rc;
 }
 
+/* Directory holding the running executable, or "" -- where a Windows install
+ * (a folder you copy: fujinet.dll beside the exe) and a macOS bundle (the
+ * runtime in Contents/MacOS beside the executable) keep the runtime. */
+static const char *exe_dir(void)
+{
+    static char dir[ASTRO_PATH_MAX];
+    static int done;
+    if (done)
+        return dir;
+    done = 1;
+    dir[0] = '\0';
+#if defined(_WIN32)
+    if (GetModuleFileNameA(NULL, dir, (DWORD)sizeof dir) == 0) { dir[0] = '\0'; }
+    else { char *p = strrchr(dir, '\\'); if (!p) p = strrchr(dir, '/'); if (p) *p = '\0'; else dir[0] = '\0'; }
+#elif defined(__APPLE__)
+    uint32_t sz = sizeof dir;
+    extern int _NSGetExecutablePath(char *, uint32_t *);
+    if (_NSGetExecutablePath(dir, &sz) == 0) { char *p = strrchr(dir, '/'); if (p) *p = '\0'; }
+    else dir[0] = '\0';
+#else
+    ssize_t n = readlink("/proc/self/exe", dir, sizeof dir - 1);
+    if (n > 0) { dir[n] = '\0'; char *p = strrchr(dir, '/'); if (p) *p = '\0'; }
+    else dir[0] = '\0';
+#endif
+    return dir;
+}
+
 /* Try each candidate directory for libfujinet; on success set s->fujinet_lib
  * and return the directory (which also holds the runtime asset tree). */
 static const char *resolve_lib_dir(struct astrosession *s)
@@ -208,6 +235,7 @@ static const char *resolve_lib_dir(struct astrosession *s)
     static char dir[ASTRO_PATH_MAX];
     const char *candidates[] = {
         getenv("FUJINET_LIB_DIR"),   /* may be NULL -- skipped, not terminal */
+        exe_dir(),                   /* Windows folder / macOS bundle */
         ASTRO_DEV_FUJINET_OUT,
         ASTRO_INSTALL_LIBDIR,
     };
@@ -240,17 +268,32 @@ int paths_provision_fujinet(struct astrosession *s)
         return -1;
     }
 
-    /* Where the pristine runtime assets live: beside the library in a dev
-     * build, or the install datadir otherwise. */
-    const char *asset_src = (libdir && *libdir) ? libdir
-                                                : ASTRO_INSTALL_DATADIR "/fujinet";
+    /* Where the pristine runtime assets live. The dev out dir holds them
+     * directly (fnconfig.ini/data/SD next to the .so); an install keeps them
+     * in a "fujinet/" subdir beside the exe (Windows) / in the datadir. Try
+     * the library dir, then <libdir>/fujinet, then the install datadir. */
+    char asset_src[ASTRO_PATH_MAX];
+    char probe[ASTRO_PATH_MAX];
+    asset_src[0] = '\0';
+    const char *cands[3];
+    int nc = 0;
+    static char c0[ASTRO_PATH_MAX], c1[ASTRO_PATH_MAX];
+    if (libdir && *libdir) {
+        snprintf(c0, sizeof c0, "%s", libdir);          cands[nc++] = c0;
+        snprintf(c1, sizeof c1, "%s/fujinet", libdir);  cands[nc++] = c1;
+    }
+    cands[nc++] = ASTRO_INSTALL_DATADIR "/fujinet";
+    for (int i = 0; i < nc; i++) {
+        snprintf(probe, sizeof probe, "%s/fnconfig.ini", cands[i]);
+        if (is_file(probe)) { snprintf(asset_src, sizeof asset_src, "%s", cands[i]); break; }
+    }
 
     /* First run: copy fnconfig.ini + data/ + SD/ into the user's tree. */
-    if (!is_file(s->fujinet_config)) {
+    if (*asset_src && !is_file(s->fujinet_config)) {
         char src[ASTRO_PATH_MAX];
         mkdir_p(s->fujinet_root);
         snprintf(src, sizeof src, "%s/fnconfig.ini", asset_src);
-        if (is_file(src)) copy_file(src, s->fujinet_config);
+        copy_file(src, s->fujinet_config);
         snprintf(src, sizeof src, "%s/data", asset_src);
         copy_tree(src, s->fujinet_data);
         snprintf(src, sizeof src, "%s/SD", asset_src);

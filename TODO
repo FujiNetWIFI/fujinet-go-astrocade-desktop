@@ -150,7 +150,21 @@ M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [x]
       now verified on this machine.
   TODO: Win32 debugger window (engine is done; GUI is a follow-up).
 
-M9 — macOS (AppKit bundle)  [ ]
+M9 — macOS (AppKit bundle)  [~]  written, CI-verified only
+  [x] AppKit frontend: DisplayView (NSView, CoreGraphics blit 4:3, NSTimer
+      pull), AppDelegate (window + menu + keypad window with PadButton
+      press/release + gold column), AstroKeyForward (NSEvent -> keysym via
+      bound table), main.m, Info.plist.in (loopback HTTP ATS exception),
+      CMakeLists (MACOSX_BUNDLE, frameworks, packs libfujinet.dylib +
+      runtime tree into Contents/MacOS -- found by paths.c's exe_dir probe).
+  [x] paths.c gained an exe_dir() probe (macOS bundle / Windows folder) so an
+      installed build finds its bundled runtime; verified it doesn't regress
+      the Linux dev path (FujiNet still connects).
+  NOT run-verified here: no Cocoa toolchain on the Linux dev box. Transposed
+  line-for-line from the verified GNOME/KDE/Win32 frontends and marked as such
+  in the file headers; validated on the macOS CI runner. Debugger window is a
+  follow-up (engine done).
+
 M10 — CI + release  [ ]
 
 Notes / gotchas confirmed so far
