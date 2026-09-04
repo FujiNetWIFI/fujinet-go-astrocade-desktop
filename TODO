@@ -87,7 +87,18 @@ M5 — debugger (Z80 tab + video-chip tab; all registers)  [x]
       headlessly: register decode correct, 512-pen palette + screen render
       confirmed. Full ctest 10/10.
 
-M6 — KDE frontend  [ ]
+M6 — KDE frontend  [x]
+  [x] plain Qt6 Widgets (not KDE Frameworks): MainWindow (menu + display,
+      keyboard capture via the bound table, F9 keypad / F11 fullscreen / F12
+      debugger), DisplayWidget (QImage 4:3 letterbox, QTimer pull),
+      KeypadWindow (6x4 gold-column grid, press/release PadButton, System +
+      Map rows), SettingsDialog (BIOS + expansion), DebuggerWindow (Z80 +
+      Video chip tabs), KeyForward.
+  [x] app-id online.fujinet.go.astrocade.kde; .desktop (adds Qt;) + metainfo
+      validated. enable_language(CXX) scoped to this frontend (project is C).
+  verify: ran on live Wayland (grim) -- native Qt window with Machine/View/
+      FujiNet/Settings menu bar and the SELECT GAME display. Full ctest 10/10.
+
 M7 — Linux packaging (DEB/RPM/TGZ + 2 flatpaks)  [ ]
 M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [ ]
 M9 — macOS (AppKit bundle)  [ ]

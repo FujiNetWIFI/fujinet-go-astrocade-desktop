@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FujiNet Go Astrocade
+GenericName=Bally Astrocade with FujiNet
+Comment=Self-contained Bally Astrocade with built-in FujiNet
+Exec=fujinet-go-astrocade-kde
+Icon=online.fujinet.go.astrocade.kde
+Terminal=false
+Categories=Game;Emulator;Qt;
+Keywords=astrocade;bally;arcade;fujinet;emulator;z80;
+StartupNotify=true

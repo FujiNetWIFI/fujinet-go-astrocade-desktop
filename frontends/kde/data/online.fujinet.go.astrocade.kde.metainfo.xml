@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>online.fujinet.go.astrocade.kde</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>FujiNet Go Astrocade</name>
+  <summary>Self-contained Bally Astrocade with built-in FujiNet</summary>
+  <description>
+    <p>
+      A Bally Astrocade with FujiNet built in: boots straight into FujiNet's
+      config client, with a clickable keypad window standing in for the
+      console's 24-key keypad so every key can be driven with a mouse.
+    </p>
+    <p>
+      Emulation is a MAME-derived Astrocade core (the Z80 CPU, the data-chip
+      video with its magic function generator, and the custom I/O sound
+      chip), with FujiNet attached over Bus-Over-IP (BoIP) on loopback TCP.
+      This is the Qt build.
+    </p>
+  </description>
+  <launchable type="desktop-id">online.fujinet.go.astrocade.kde.desktop</launchable>
+  <categories>
+    <category>Game</category>
+    <category>Emulator</category>
+  </categories>
+  <url type="homepage">https://fujinet.online/</url>
+  <url type="bugtracker">https://github.com/FujiNetWIFI/fujinet-go-astrocade-desktop/issues</url>
+  <developer id="online.fujinet">
+    <name>Thomas Cherryhomes</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-04">
+      <description>
+        <p>
+          First release: the emulator core (validated pixel-exact against
+          MAME) and its FujiNet cartridge, the Qt frontend with the keypad
+          window and debugger, and system-ROM import.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>
