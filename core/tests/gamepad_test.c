@@ -17,13 +17,15 @@
 
 #include "astrosession.h"
 #include "gamepad_sdl.h"
+#include "test_tmpdir.h"
 
 static int failures;
 #define CHECK(c, m) do { if (!(c)) { fprintf(stderr, "FAIL: %s\n", m); failures++; } } while (0)
 
 int main(void)
 {
-    char tmpl[] = "/tmp/astro_gamepad_test.XXXXXX";
+    char tmpl[512];
+    test_tmpl(tmpl, sizeof tmpl, "astro_gamepad_test");
     char *dir = mkdtemp(tmpl);
     if (!dir) return 1;
     char cfg[512], data[512];

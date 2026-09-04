@@ -13,6 +13,7 @@
 
 #include "astrosession.h"
 #include "bindings.h"
+#include "test_tmpdir.h"
 
 static int failures;
 #define CHECK(cond, msg) do { if (!(cond)) { \
@@ -20,7 +21,8 @@ static int failures;
 
 int main(void)
 {
-    char tmpl[] = "/tmp/astro_bindings_test.XXXXXX";
+    char tmpl[512];
+    test_tmpl(tmpl, sizeof tmpl, "astro_bindings_test");
     char *dir = mkdtemp(tmpl);
     if (!dir) { perror("mkdtemp"); return 1; }
     char cfg[512], data[512];

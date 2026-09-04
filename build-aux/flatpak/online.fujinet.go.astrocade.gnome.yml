@@ -75,3 +75,14 @@ modules:
         url: https://github.com/FujiNetWIFI/fujinet-firmware
         commit: 20e89ead5d88e8c441b448d231d13ca63aa71dc5
         dest: third_party/fujinet-firmware
+      # Same reasoning: the sandboxed build step has no network access, but
+      # tools/fujinet/build-fujinet-desktop.sh needs mbedTLS 3.x and
+      # org.gnome.Sdk ships none. Pinned to the exact tag/commit the script
+      # itself builds when it has to fetch mbedTLS live (ensure_mbedtls's
+      # MBEDTLS_TAG) -- ensure_mbedtls skips that fetch once it finds a
+      # checkout already here.
+      - type: git
+        url: https://github.com/Mbed-TLS/mbedtls.git
+        tag: mbedtls-3.6.5
+        commit: e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df
+        dest: tools/fujinet/work/mbedtls-src

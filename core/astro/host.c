@@ -217,10 +217,12 @@ static long ts_diff_ns(const struct timespec *a, const struct timespec *b)
  * no-op under mingw/Wine (the emulator then free-ran at thousands of fps in
  * the Windows build -- the sibling ports' "verify the throttle per platform"
  * lesson), so Windows uses a plain relative nanosleep, which winpthreads
- * honours. */
+ * honours. Darwin has no clock_nanosleep at all (it's a glibc/POSIX.1b
+ * extension the BSD-derived libc never picked up), so macOS takes the same
+ * relative-nanosleep path. */
 static void sleep_until(const struct timespec *next, const struct timespec *now)
 {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     long remain = ts_diff_ns(next, now);
     if (remain <= 0)
         return;
