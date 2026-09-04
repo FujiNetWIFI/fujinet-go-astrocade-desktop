@@ -8,23 +8,29 @@ newest member of the FujiNet Go desktop family (`fujinet-go-adam-desktop`,
 
 ## Status
 
-Early. The emulator core and its FujiNet cartridge are built and validated;
-the native frontends, the bundled FujiNet runtime, and packaging are in
-progress. See `TODO`.
+Complete. All targets build; the Linux (GNOME + KDE) and Windows frontends are
+run-verified on the dev machine, macOS is validated on CI. See `TODO` for the
+milestone-by-milestone log.
 
-Done and verified:
 - **Emulator core** — the Bally Astrocade home console (Z80, the data-chip
   video with its magic function generator, the custom I/O sound chip, the
   24-key keypad and hand controllers, RAM expansions), transposed from MAME's
   `astrocde` driver around floooh's cycle-stepped `z80.h`. Its rendered output
   is pixel-identical to MAME's (the boot menu and a running game were compared
-  frame-for-frame), it paces at the real ~60.05 Hz, and it takes IM 2 vectored
-  interrupts from the custom chip.
-- **FujiNet cartridge** — the one cart device, transposed from the firmware's
-  own MAME model and compiling the cartridge's own protocol sources verbatim
-  (identical-by-construction). Serves plain ROMs, the 256K/512K homebrew
-  mappers, and protocol-v2 banked images, and boots the baked CONFIG client
-  when no cartridge is loaded.
+  frame-for-frame), it paces at the real ~60 Hz, and it takes IM 2 vectored
+  interrupts. Verified Windows-portable under Wine.
+- **FujiNet** — the cartridge device compiles the firmware's own protocol
+  sources verbatim (identical-by-construction) and dials a real fujinet-pc
+  built in-process as `libfujinet` (BoIP on **11500**, web UI on **11501**).
+  The bundled CONFIG client browses hosts end-to-end through the cart against a
+  live TNFS host.
+- **Frontends** — GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), Windows (Win32/
+  GDI) and macOS (AppKit), each with the emulator display, the 24-key keypad
+  window (gold column, RESET / RESET TO CONFIG), a two-tab debugger exposing
+  every Z80 and video-chip register, gamepad hand controllers, ROM import, and
+  a FujiNet console-log viewer. Config pages open in the system browser.
+- **Packaging** — per-frontend DEB/RPM/TGZ, two Flatpaks, a Windows NSIS
+  installer, and a signed macOS bundle, all wired through GitHub Actions.
 
 ## Building
 

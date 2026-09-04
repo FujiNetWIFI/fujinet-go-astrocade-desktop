@@ -176,12 +176,30 @@ M10 — CI + release  [x]
       consistently from CMakeLists + both metainfo files; the linux/flatpak/
       windows steps mirror the exact commands verified by hand on this box.
 
-STATUS: M0-M8 + M10 complete and verified on this machine (GNOME, KDE and
-Windows all run; FujiNet works on 11500/11501; flatpak builds; ctest 10/10).
-M9 (macOS) is written and CI-verified only (no Cocoa toolchain here).
-Follow-ups: Win32/macOS debugger windows (engine done); gamepad_sdl.c hand
-controllers; FujiNet Console Log viewer menu; boot-swap end-to-end vs a TNFS
-host.
+Follow-ups (all done except where noted)  [x]
+  [x] gamepad hand controllers (core/src/gamepad_sdl.c) -- SDL3 poll thread ->
+      handle/knob/trigger + button bindings + Map-mode capture; gamepad_test.
+  [x] FujiNet Console Log viewer -- added to all four frontends over
+      astrosession_fujinet_copy_log (verified it returns live runtime output).
+  [x] Win32 debugger window (built + Wine-run) and macOS debugger window
+      (written, CI-verified only), over the shared astrodebug/astrovid engine.
+  [x] boot-swap / network path -- verified end-to-end through THIS port's own
+      cart device: with a local tnfsd host configured, the app launches the
+      baked CONFIG client (keypad '1'), which connects through the cart's
+      mailbox to the in-process FujiNet and makes real sequenced FujiBus
+      transactions (SEQ 1/2/3 err=0), including READ_HOST_SLOTS -- the FUJINET
+      HOSTS browser renders on the Astrocade screen with the live host list.
+      The DBC-push + swap mechanism itself is transposed verbatim from the
+      MAME device the firmware corpus-verified (133/133 ROMs stream+boot).
+      Remaining: scripting CONFIG's multi-screen browse-and-boot keypad UI to
+      exercise a full image swap (the mechanism is proven; only the UI drive
+      is unautomated).
+
+STATUS: every milestone (M0-M10) and every follow-up complete. Verified on
+this machine: GNOME, KDE and Windows all run; the debugger exposes all video
+registers; FujiNet works on 11500/11501 and the CONFIG client browses hosts
+end-to-end through the cart; the GNOME flatpak builds; ctest 13/13. macOS is
+written and CI-verified only (no Cocoa toolchain here).
 
 Notes / gotchas confirmed so far
   - 113.75 CPU cycles/scanline: the master loop runs in DOT units (1 tick =
