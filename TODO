@@ -1,0 +1,63 @@
+FujiNet Go Astrocade — milestone log
+====================================
+
+Each [x] records what was verified and how, in the family tradition (nothing
+is "done" on "it compiles"). The plan is in the approved plan file
+make-a-new-version-*.md.
+
+M0 — scaffold  [x]
+  [x] root CMakeLists (VERSION single-source, FRONTEND switch, GNUInstallDirs
+      at top), .gitignore with !build-aux/, LICENSE
+  [x] cmake/Dependencies.cmake — fujinet-firmware pinned to astrocade-bringup
+      (20e89ead5); the branch's pico/astrocade is checked at configure time
+  [x] cmake/StageFujiProto.cmake — stages the cartridge's own protocol
+      sources into core/astro/fuji-generated (identical-by-construction; the
+      firmware's emu/apply.sh does the same graft into MAME)
+  [x] tools/icons/make-icons.py — dark red #8B0000 (distinct from Apple II's
+      bright #F44336); icons rendered and committed under data/icons/
+  [x] vendored chips z80.h + z80dasm.h (zlib); disassembler API confirmed
+      callback-based and standalone (M0's open risk, resolved)
+  verify: cmake -B build -DFRONTEND=none configures; icons render.
+
+M1 — emulator core  [x]
+  [x] machine.c (bus, dot-paced loop, IM2 interrupt model), video.c
+      (registers, magic funcgen, palette, per-scanline render), sound.c
+      (transposed DSP + 48 kHz decimation), host.c (thread, 60.05 Hz pacing,
+      frame slot + audio ring), fujinet_cart.c (the one cart device)
+  [x] WITH_ASTROCADE_ROMS + tools/roms/embed-roms.py (dev embed, off for
+      release) + no_embedded_roms.py compliance ctest
+  [x] boot_smoke: BIOS reaches its menu, IM 2 selected, scanline interrupt
+      armed, host paces 60.05 fps (the sibling ports' unthrottled-core trap)
+  [x] funcgen_test (shift/OR/XOR/flop/expand/intercept vectors), keypad_
+      matrix_test (all 24 keys via the real IO decode), mapper_test (astromap
+      FLAT/256K/512K/APPBANK + FLAT mirror)
+  [x] VALIDATED AGAINST MAME: my framebuffer is pixel-identical to a MAME
+      astrocde snapshot for both the SELECT GAME menu and a running game
+      (280 ZZZAP "ENTER RACE TIME"). NOTE: Astrocade games run as BIOS-
+      interpreted bytecode, so the Z80 PC stays in BIOS ROM even in-game --
+      verify launches by the framebuffer, never by cart-space PC.
+  verify: cmake --build build && ctest -> 4/4 pass; ROM-less build passes
+      no_embedded_roms.py and boot_smoke SKIPs (77) with no BIOS.
+
+M2 — session layer  [ ]
+  astrosession.[ch] (mirror intvsession.h minus disc/ECS), settings.c,
+  paths.c, bindings.c (24 keypad + 2 sysact bands), astro_keymap.c,
+  audio_sdl.c, gamepad_sdl.c. Tests: no_sdl_link, session, audio_ring,
+  keymap, bindings, reset.
+
+M3 — GNOME frontend + keypad + ROM import  [ ]
+M4 — FujiNet end-to-end (runtime build, ports 11500/11501, boot swap)  [ ]
+M5 — debugger (Z80 tab + video-chip tab; all registers)  [ ]
+M6 — KDE frontend  [ ]
+M7 — Linux packaging (DEB/RPM/TGZ + 2 flatpaks)  [ ]
+M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [ ]
+M9 — macOS (AppKit bundle)  [ ]
+M10 — CI + release  [ ]
+
+Notes / gotchas confirmed so far
+  - 113.75 CPU cycles/scanline: the master loop runs in DOT units (1 tick =
+    4 dots, 455/line), remainder carried between lines. Do not round per line.
+  - fujitcp.c is POSIX; a Winsock twin (fujitcp_win32.c) lands in M8. The
+    core CMake already switches to it under WIN32.
+  - The staged fujitcp.c needs _DEFAULT_SOURCE under -std=c11 (set in
+    core/CMakeLists.txt).

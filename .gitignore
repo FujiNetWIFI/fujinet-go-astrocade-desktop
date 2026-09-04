@@ -1,0 +1,28 @@
+build*/
+# ...but build-aux/ is source, not output: it holds the flatpak manifests
+# and the NSIS installer script (the directory name is GNOME Builder's
+# convention). Without this the pattern above swallows new files there
+# silently -- they never show up as untracked, so a manifest can be
+# "added" and still be missing from CI.
+!build-aux/
+third_party/fujinet-firmware/
+core/astro/fuji-generated/
+tools/fujinet/work/
+
+# The Bally system ROMs are copyrighted firmware, not redistributable (see
+# COMPLIANCE.md). Keep them out of the repo; a developer drops their own copy
+# in for a -DWITH_ASTROCADE_ROMS=ON build. embed-roms.py and the compliance
+# test stay tracked.
+tools/roms/*.bin
+compile_commands.json
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+__pycache__/
+
+# flatpak-builder's state directory.
+.flatpak-builder/
+build-flatpak*/
+repo/
