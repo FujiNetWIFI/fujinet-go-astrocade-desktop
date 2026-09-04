@@ -39,7 +39,8 @@ jobs:
             desktop-file-utils appstream \
             libx11-dev libxext-dev libxrandr-dev libxi-dev libxss-dev \
             libxcursor-dev libxkbcommon-dev libwayland-dev libdrm-dev \
-            libgbm-dev libgl1-mesa-dev libpulse-dev libasound2-dev
+            libgbm-dev libgl1-mesa-dev libpulse-dev libasound2-dev \
+            libxtst-dev
 
       # SDL3 is too new to assume an apt package; built from source and pinned
       # to the exact release the project is tested against.
