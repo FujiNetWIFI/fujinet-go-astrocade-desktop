@@ -1,0 +1,77 @@
+# Flatpak manifest for the GNOME frontend.
+#
+# Self-contained: every input is declared here, so this builds from a plain
+# checkout with no preparation steps -- which is also what makes it work
+# unchanged in GNOME Builder.
+#
+# The app source is the local tree minus the directories the manifest
+# provides itself: third_party/fujinet-firmware comes from the pinned commit
+# below (the same astrocade-bringup commit as cmake/Dependencies.cmake), so a
+# flatpak build never depends on a working checkout's state.
+#
+# Build + install + run:
+#   flatpak-builder --user --install --force-clean build-flatpak \
+#       build-aux/flatpak/online.fujinet.go.astrocade.gnome.yml
+#   flatpak run online.fujinet.go.astrocade.gnome
+#
+# NOTE: the bundled FujiNet runtime (mbedTLS + the python webui deps + the
+# WITH_FUJINET build option) lands with the FujiNet milestone; until then this
+# builds SDL3 + the app, and FujiNet runs link-down like a standalone
+# fujinet-pc that is not started.
+
+app-id: online.fujinet.go.astrocade.gnome
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+command: fujinet-go-astrocade-gnome
+
+finish-args:
+  - --share=ipc
+  - --share=network          # the FujiNet BoIP link + the loopback web UI
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio      # SDL audio (PipeWire's Pulse interface)
+  - --device=all             # gamepad hotplug (hidraw/evdev)
+
+modules:
+  - name: sdl3
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DSDL_STATIC=OFF
+      - -DSDL_TEST_LIBRARY=OFF
+    sources:
+      - type: git
+        url: https://github.com/libsdl-org/SDL.git
+        # keep in step with the SDL the CI jobs build
+        tag: release-3.4.12
+        commit: f87239e71e42da91ca317a12eefb82cfbf3393eb
+
+  - name: fujinet-go-astrocade
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DFRONTEND=gnome
+      # The Bally system ROMs are copyrighted firmware with no
+      # redistributable substitute -- see COMPLIANCE.md. Every published
+      # artifact, this flatpak included, embeds none and leaves it to the
+      # app's own "Import System ROM" path.
+      - -DWITH_ASTROCADE_ROMS=OFF
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .flatpak-builder
+          - build
+          - build-flatpak
+          - build-flatpak-kde
+          - third_party
+          - tools/fujinet/work
+      # Pinned exactly as cmake/Dependencies.cmake: the astrocade-bringup
+      # commit. astro_provide_dependency() skips its own fetch once it finds
+      # build.sh (the SENTINEL) already here.
+      - type: git
+        url: https://github.com/FujiNetWIFI/fujinet-firmware
+        commit: 20e89ead5d88e8c441b448d231d13ca63aa71dc5
+        dest: third_party/fujinet-firmware

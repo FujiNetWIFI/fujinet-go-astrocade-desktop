@@ -99,7 +99,20 @@ M6 — KDE frontend  [x]
   verify: ran on live Wayland (grim) -- native Qt window with Machine/View/
       FujiNet/Settings menu bar and the SELECT GAME display. Full ctest 10/10.
 
-M7 — Linux packaging (DEB/RPM/TGZ + 2 flatpaks)  [ ]
+M7 — Linux packaging (DEB/RPM/TGZ + 2 flatpaks)  [x]
+  [x] CPack per-frontend (already in root CMakeLists): one package per
+      frontend, DEB;RPM;TGZ, auto-detected deps (shlibdeps / autoreqprov).
+      TGZ verified: correct tree (bin, applications, icons x9 by app-id,
+      metainfo). DEB/RPM need dpkg-deb/rpmbuild -- present on the CI runners.
+  [x] flatpak manifests for both frontends (build-aux/flatpak/*.yml): SDL3
+      pinned + fujinet-firmware pinned to the astrocade-bringup commit + the
+      app (WITH_ASTROCADE_ROMS=OFF). GNOME runtime 49 / KDE 6.11. mbedTLS +
+      python-webui deps + WITH_FUJINET are added with the FujiNet milestone.
+  verify: GNOME flatpak builds end-to-end here (flatpak-builder: SDL3
+      compiled, firmware fetched, app built, icons/desktop/metainfo exported,
+      AppStream metadata composed). Pin recorded in 3 places (Dependencies +
+      both manifests).
+
 M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [ ]
 M9 — macOS (AppKit bundle)  [ ]
 M10 — CI + release  [ ]
