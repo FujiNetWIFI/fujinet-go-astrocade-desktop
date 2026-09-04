@@ -18,6 +18,7 @@ set(GNOME_SOURCES
   display.c
   prefs.c
   keypad/keypad_window.c
+  debugger/dbg_window.c
 )
 
 set(GNOME_APP_ID online.fujinet.go.astrocade.gnome)

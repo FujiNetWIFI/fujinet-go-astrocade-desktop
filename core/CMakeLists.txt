@@ -33,6 +33,8 @@ set(ASTRO_CORE_SOURCES
   astro/sound.c
   astro/host.c
   astro/fujinet_cart.c
+  debugger/debugger.c
+  debugger/vidview.c
   "${GEN}/fujimail.c"
   "${GEN}/fujibus.c"
   "${GEN}/astromap.c"
@@ -72,6 +74,7 @@ endif()
 # our own modules are warning-clean; the staged firmware sources are vendored.
 set_source_files_properties(
   astro/machine.c astro/video.c astro/sound.c astro/host.c astro/fujinet_cart.c
+  debugger/debugger.c debugger/vidview.c
   PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # ---- the Bally system ROMs -------------------------------------------------
@@ -160,6 +163,11 @@ set_tests_properties(boot_smoke PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME funcgen_test COMMAND funcgen_test)
 add_test(NAME keypad_matrix_test COMMAND keypad_matrix_test)
 add_test(NAME mapper_test COMMAND mapper_test)
+
+add_executable(debug_test tests/debug_test.c)
+target_link_libraries(debug_test astro_core)
+add_test(NAME debug_test COMMAND debug_test "${ASTRO_ROM_DIR_SRC}/astro.bin")
+set_tests_properties(debug_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # astro_core must carry no SDL: this links it ALONE.
 add_executable(no_sdl_link_test tests/no_sdl_link_test.c)

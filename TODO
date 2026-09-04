@@ -39,15 +39,54 @@ M1 — emulator core  [x]
   verify: cmake --build build && ctest -> 4/4 pass; ROM-less build passes
       no_embedded_roms.py and boot_smoke SKIPs (77) with no BIOS.
 
-M2 — session layer  [ ]
-  astrosession.[ch] (mirror intvsession.h minus disc/ECS), settings.c,
-  paths.c, bindings.c (24 keypad + 2 sysact bands), astro_keymap.c,
-  audio_sdl.c, gamepad_sdl.c. Tests: no_sdl_link, session, audio_ring,
-  keymap, bindings, reset.
+M2 — session layer  [x]
+  [x] astrosession.[ch] wrapping astro_host, settings.c, paths.c, roms.c
+      (BIOS resolve + import by CRC32), session.c, bindings.c (24 keypad +
+      2 sysact targets, steal-on-remap + persistence), astro_keymap.c,
+      audio_sdl.c (SDL3 pull). astro_session is a separate static lib so
+      astro_core stays SDL-free.
+  [x] Tests 7/7: no_sdl_link (nm-verified zero SDL in astro_core), session
+      (settings persist, option defaults, BIOS import accept/reject, real
+      start/stop paints a frame), bindings (defaults/steal/persist/reset).
+  NOTE: gamepad_sdl.c deferred -- bindings support gamepad buttons but no SDL
+  gamepad polling yet; add with a later milestone (hand controllers).
 
-M3 — GNOME frontend + keypad + ROM import  [ ]
+M3 — GNOME frontend + keypad + ROM import  [x]
+  [x] GTK4/libadwaita: display (4:3 letterbox, frame-clock pull), header-bar
+      menu, keyboard capture via the bound table, Preferences (BIOS variant +
+      RAM expansion), system-ROM import by CRC + "no ROM" prompt, FujiNet
+      Configuration -> system browser (gtk_uri_launcher).
+  [x] keypad window: 6x4 grid faithful to the hardware (gold right column),
+      press/release GtkGestureClick, System row (Reset Game / Reset to
+      CONFIG), Map row (remap via bindings). F9 toggles; singleton hide-on-close.
+  [x] app-id online.fujinet.go.astrocade.gnome; .desktop + metainfo validated
+      (desktop-file-validate, appstreamcli --pedantic ctests).
+  verify: ran on live Wayland (grim) -- BIOS boots to SELECT GAME with FUJINET
+      CONFIG as entry 1; keypad window matches the reference photo. Full ctest 9/9.
 M4 — FujiNet end-to-end (runtime build, ports 11500/11501, boot swap)  [ ]
-M5 — debugger (Z80 tab + video-chip tab; all registers)  [ ]
+
+M5 — debugger (Z80 tab + video-chip tab; all registers)  [x]
+  [x] engine (core/debugger/debugger.c): instruction-hook based, pause blocks
+      the emu thread in the hook (cond_wait); step/step-over (CALL/RST/DJNZ/
+      block-repeat)/step-out (word at SP + SP guard); regs (full Z80 incl.
+      shadow bank, IX/IY, I/R, IM, IFF1/2, WZ, HALT); non-destructive peek +
+      real poke; 64 breakpoints; stop_serial polled by UI. chips z80dasm.
+  [x] video view (core/debugger/vidview.c + astrovid.h): one consistent
+      snapshot exposing EVERY register (Nutting pp.106-107) -- 8 color regs,
+      mode, HORCB split+bg, VERBL, INFBK/INMOD/INLIN, XPAND, intercept +
+      feedback, full magic-funcgen internals, the 8 sound regs + osc/vibrato/
+      noise state; renders screen (shares the MAME-validated line code),
+      screen-RAM bitmap, 512-pen palette strip, decoded register text.
+  [x] GNOME debugger window (F12 / View menu): Z80 tab (controls, registers,
+      disassembly with breakpoint markers, hex memory view, addr/bp entries)
+      + Video chip tab (screen, screen RAM, palette, all-registers text).
+      Shared RGBA scratch sized to MAX of all renders.
+  verify: debug_test passes (pause, IM 2 regs, step advances, disassembly,
+      repeatable peek, a breakpoint fires exactly at its address, snapshot
+      exposes INLIN/VERBL + magic register text). Video renders dumped
+      headlessly: register decode correct, 512-pen palette + screen render
+      confirmed. Full ctest 10/10.
+
 M6 — KDE frontend  [ ]
 M7 — Linux packaging (DEB/RPM/TGZ + 2 flatpaks)  [ ]
 M8 — Windows (Win32 + fujitcp_win32.c + NSIS)  [ ]

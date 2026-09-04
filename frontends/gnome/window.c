@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "bindings.h"
+#include "debugger/dbg_window.h"
 #include "display.h"
 #include "keypad/keypad_window.h"
 #include "keysym_map.h"
@@ -98,6 +99,9 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
             gtk_window_unfullscreen(GTK_WINDOW(self));
         else
             gtk_window_fullscreen(GTK_WINDOW(self));
+        return TRUE;
+    case GDK_KEY_F12:
+        astro_debugger_show(GTK_WINDOW(self), self->session);
         return TRUE;
     case GDK_KEY_r:
     case GDK_KEY_R:
@@ -233,6 +237,13 @@ static void action_fujinet_config(GSimpleAction *a, GVariant *p, gpointer user_d
     g_object_unref(launcher);
 }
 
+static void action_debugger(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
+    AstroWindow *self = ASTRO_WINDOW(user_data);
+    (void)a; (void)p;
+    astro_debugger_show(GTK_WINDOW(self), self->session);
+}
+
 static void action_preferences(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
@@ -263,6 +274,7 @@ static const GActionEntry win_actions[] = {
     {.name = "import-rom", .activate = action_import_rom},
     {.name = "open-cart", .activate = action_open_cart},
     {.name = "fujinet-config", .activate = action_fujinet_config},
+    {.name = "debugger", .activate = action_debugger},
     {.name = "preferences", .activate = action_preferences},
     {.name = "about", .activate = action_about},
 };
@@ -300,6 +312,7 @@ static GMenu *build_menu(void)
     g_menu_append_section(menu, "Machine", G_MENU_MODEL(machine));
 
     g_menu_append(view, "Keypad (F9)", "win.keypad");
+    g_menu_append(view, "Debugger (F12)", "win.debugger");
     g_menu_append_section(menu, "View", G_MENU_MODEL(view));
 
     g_menu_append(fujinet, "Reset Game (Backspace)", "win.reset-game");
@@ -385,6 +398,8 @@ GtkWidget *astro_window_new(AdwApplication *app, astrosession *session)
 
     if (getenv("ASTRO_OPEN_KEYPAD"))
         astro_keypad_window_toggle(GTK_WINDOW(self), session);
+    if (getenv("ASTRO_OPEN_DEBUGGER"))
+        astro_debugger_show(GTK_WINDOW(self), session);
 
     if (!astrosession_has_system_roms(session))
         astro_window_toast(self,
