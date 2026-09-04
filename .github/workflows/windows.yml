@@ -1,0 +1,60 @@
+name: Windows
+
+# Native MSYS2/UCRT64. The mingw-w64 cross-compile in cmake/toolchains/
+# mingw-w64.cmake exists because the frontend was developed on Linux and
+# smoke-tested under Wine (see TODO); this workflow is the real native build.
+#
+# Builds the native Win32 frontend (frontends/windows) alongside core + the
+# FujiNet runtime + the test suite. The core's FujiNet transport is
+# core/astro/fujitcp_win32.c (Winsock), which needs ws2_32 -- already wired
+# into frontends/windows/CMakeLists.txt and the core CMakeLists.
+#
+# WITH_ASTROCADE_ROMS=OFF (the Bally BIOS is not redistributable, so
+# boot_smoke/debug_test/session_test report ctest's skip code 77). WITH_FUJINET
+# is left at its default (ON) to prove the MSYS2 runtime build works here --
+# tools/fujinet/build-fujinet-desktop.sh has the cygpath/MSYS2 handling for it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            make
+            patch
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-sdl3
+
+      - name: Confirm the packaged SDL3 is on the 3.x line
+        run: pacman -Q mingw-w64-ucrt-x86_64-sdl3 | grep -qE ' 3\.[0-9]+\.[0-9]+-'
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DWITH_ASTROCADE_ROMS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure

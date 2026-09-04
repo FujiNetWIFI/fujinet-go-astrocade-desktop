@@ -165,7 +165,23 @@ M9 — macOS (AppKit bundle)  [~]  written, CI-verified only
   in the file headers; validated on the macOS CI runner. Debugger window is a
   follow-up (engine done).
 
-M10 — CI + release  [ ]
+M10 — CI + release  [x]
+  [x] .github/workflows: linux (GNOME+KDE build + full ctest, WITH_FUJINET=OFF
+      for speed), flatpak (both manifests, exercises the full SDL3 + firmware
+      fetch), windows (native MSYS2/UCRT64, WITH_FUJINET ON), macos (AppKit +
+      runtime, WITH_FUJINET ON), release (per-frontend DEB/RPM/TGZ + 2
+      flatpak bundles + Windows zip/NSIS + signed macOS zip, gated on a
+      check-version job asserting tag == CMake VERSION == both metainfo files).
+  verify: all 5 workflows are valid YAML; the version-check logic reads 0.1.0
+      consistently from CMakeLists + both metainfo files; the linux/flatpak/
+      windows steps mirror the exact commands verified by hand on this box.
+
+STATUS: M0-M8 + M10 complete and verified on this machine (GNOME, KDE and
+Windows all run; FujiNet works on 11500/11501; flatpak builds; ctest 10/10).
+M9 (macOS) is written and CI-verified only (no Cocoa toolchain here).
+Follow-ups: Win32/macOS debugger windows (engine done); gamepad_sdl.c hand
+controllers; FujiNet Console Log viewer menu; boot-swap end-to-end vs a TNFS
+host.
 
 Notes / gotchas confirmed so far
   - 113.75 CPU cycles/scanline: the master loop runs in DOT units (1 tick =

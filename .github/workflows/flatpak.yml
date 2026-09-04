@@ -1,0 +1,50 @@
+name: Flatpak
+
+# Builds both flatpak manifests
+# (build-aux/flatpak/online.fujinet.go.astrocade.{gnome,kde}.yml) with
+# flatpak-builder against the real GNOME/KDE runtimes pulled from Flathub.
+# This is the job that exercises the full build including SDL3 and the
+# fujinet-firmware fetch -- the GNOME manifest was actually built here on the
+# dev box before this workflow was written.
+#
+# WITH_ASTROCADE_ROMS=OFF is baked into both manifests already: the Bally
+# system ROM is not freely redistributable (see COMPLIANCE.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest:
+          - build-aux/flatpak/online.fujinet.go.astrocade.gnome.yml
+          - build-aux/flatpak/online.fujinet.go.astrocade.kde.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak and flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install the runtime and SDK this manifest targets
+        run: |
+          runtime=$(sed -n 's/^runtime: *//p' "${{ matrix.manifest }}")
+          runtime_version=$(sed -n "s/^runtime-version: *'\(.*\)'/\1/p" "${{ matrix.manifest }}")
+          sdk=$(sed -n 's/^sdk: *//p' "${{ matrix.manifest }}")
+          flatpak install -y --user flathub \
+            "${runtime}/x86_64/${runtime_version}" \
+            "${sdk}/x86_64/${runtime_version}"
+
+      - name: Build
+        run: |
+          flatpak-builder --user --force-clean --disable-rofiles-fuse \
+            build-flatpak "${{ matrix.manifest }}"

@@ -1,0 +1,55 @@
+name: macOS
+
+# Builds the native AppKit frontend (frontends/macos) alongside core + the
+# FujiNet runtime + the test suite. The macOS frontend was written on Linux
+# and has never been built anywhere (see TODO / its own file headers) -- this
+# workflow is the first thing that will actually attempt it. A failure here is
+# real signal about the frontend code, not necessarily the workflow.
+#
+# WITH_ASTROCADE_ROMS=OFF (the Bally BIOS is not redistributable). WITH_FUJINET
+# is left at its default (ON): tools/fujinet/build-fujinet-desktop.sh has
+# Darwin handling (libfujinet.dylib; it builds mbedTLS 3.6.5 from source on
+# Darwin), so it is meant to work here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    env:
+      DYLD_LIBRARY_PATH: /tmp/sdl3-install/lib
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: brew install cmake ninja python3
+
+      - name: Build and install SDL3 (release-3.4.12, pinned)
+        run: |
+          git clone --depth 1 --branch release-3.4.12 \
+            https://github.com/libsdl-org/SDL.git /tmp/sdl3-src
+          cmake -S /tmp/sdl3-src -B /tmp/sdl3-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3-install \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
+          cmake --build /tmp/sdl3-build
+          cmake --install /tmp/sdl3-build
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_PREFIX_PATH=/tmp/sdl3-install \
+            -DWITH_ASTROCADE_ROMS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure
