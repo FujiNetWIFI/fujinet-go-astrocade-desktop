@@ -34,9 +34,13 @@ target_compile_definitions(fujinet-go-astrocade-windows PRIVATE
   ASTRO_APP_ID="online.fujinet.go.astrocade")
 
 # Bundle the MinGW runtime statically so the only loose DLL is SDL3.dll
-# itself (astro_session links SDL3 for audio, via the SDL3::SDL3 import lib
-# which stays dynamic).
+# itself (astro_session links SDL3 for audio, via the SDL3::SDL3 import lib,
+# which stays dynamic: CMake references it by its .dll.a path directly, not
+# a bare -lSDL3 search, so -static below doesn't touch it). -static-libgcc
+# alone isn't enough -- Threads::Threads (astro_core) resolves to a bare
+# -lpthread search on mingw, which without -static picks up the dynamic
+# libwinpthread-1.dll import lib instead of its static archive.
 target_link_options(fujinet-go-astrocade-windows PRIVATE
-  -static-libgcc)
+  -static-libgcc -static)
 
 install(TARGETS fujinet-go-astrocade-windows RUNTIME DESTINATION bin)
