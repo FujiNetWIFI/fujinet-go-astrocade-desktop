@@ -96,7 +96,10 @@ modules:
           - build
           - build-flatpak
           - build-flatpak-kde
-          - third_party
+          # only fujinet-firmware -- it's provisioned fresh below (pinned,
+          # gitignored locally); third_party/gamecontrollerdb is committed
+          # and must come through with the rest of the tree.
+          - third_party/fujinet-firmware
           - tools/fujinet/work
       # Pinned exactly as cmake/Dependencies.cmake: the astrocade-bringup
       # commit. astro_provide_dependency() skips its own fetch once it finds
