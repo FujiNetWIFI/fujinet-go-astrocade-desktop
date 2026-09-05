@@ -39,6 +39,8 @@ static GtkWindow *g_win;
 static astrosession *g_session;
 static GtkWidget *g_key_buttons[ASTROSESSION_KEY_COUNT];
 static GtkWidget *g_sysact_buttons[ASTROSESSION_SYSACT_COUNT];
+static GtkWidget *g_handle_buttons[ASTRO_HANDLE_ACTION_COUNT];
+static guint8 g_handle_mask;   /* player-0 hand controller, this window's own held bits */
 static GtkWidget *g_status_label;
 static GtkWidget *g_map_btn;
 
@@ -68,8 +70,10 @@ static GtkWidget *button_for_target(int target)
 {
     if (target >= 0 && target < ASTROSESSION_KEY_COUNT)
         return g_key_buttons[target];
-    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_COUNT)
+    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_HANDLE)
         return g_sysact_buttons[target - ASTRO_TARGET_SYSACT];
+    if (target >= ASTRO_TARGET_HANDLE && target < ASTRO_TARGET_COUNT)
+        return g_handle_buttons[target - ASTRO_TARGET_HANDLE];
     return NULL;
 }
 
@@ -170,6 +174,44 @@ static void sysact_pressed(GtkGestureClick *g, int n, double x, double y,
     astrosession_sysaction_fire(g_session, act);
 }
 
+/* order matches ASTRO_TARGET_HANDLE's layout (see bindings.c's k_handle_bit) */
+static const guint8 k_handle_bits[ASTRO_HANDLE_ACTION_COUNT] = {
+    ASTROSESSION_HANDLE_UP, ASTROSESSION_HANDLE_DOWN,
+    ASTROSESSION_HANDLE_LEFT, ASTROSESSION_HANDLE_RIGHT,
+    ASTROSESSION_HANDLE_TRIGGER,
+};
+
+/* Hand controller row: level-held like the keypad buttons (not fire-once
+ * like sysact_pressed above), since these drive astrosession_handle_set's
+ * live bitmask. Doubles as a way to test a binding on-screen without a
+ * physical gamepad. */
+static void handle_pressed(GtkGestureClick *g, int n, double x, double y,
+                           gpointer user_data)
+{
+    int idx = GPOINTER_TO_INT(user_data);
+    (void)g; (void)n; (void)x; (void)y;
+    int target = ASTRO_TARGET_HANDLE + idx;
+    if (g_map_state == MAP_PICK_TARGET) {
+        map_pick_target(target);
+        return;
+    }
+    if (g_map_state == MAP_WAIT_INPUT)
+        return;
+    g_handle_mask |= k_handle_bits[idx];
+    astrosession_handle_set(g_session, 0, g_handle_mask);
+}
+
+static void handle_released(GtkGestureClick *g, int n, double x, double y,
+                            gpointer user_data)
+{
+    int idx = GPOINTER_TO_INT(user_data);
+    (void)g; (void)n; (void)x; (void)y;
+    if (g_map_state != MAP_IDLE)
+        return;
+    g_handle_mask &= (guint8)~k_handle_bits[idx];
+    astrosession_handle_set(g_session, 0, g_handle_mask);
+}
+
 static GtkWidget *make_key_button(int key)
 {
     GtkWidget *btn = gtk_button_new_with_label(k_labels[key]);
@@ -198,6 +240,20 @@ static GtkWidget *make_sysact_button(int act, const char *label)
                      GINT_TO_POINTER(act));
     gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(click));
     g_sysact_buttons[act] = btn;
+    return btn;
+}
+
+static GtkWidget *make_handle_button(int idx, const char *label)
+{
+    GtkWidget *btn = gtk_button_new_with_label(label);
+    gtk_widget_set_hexpand(btn, TRUE);
+    GtkGesture *click = gtk_gesture_click_new();
+    g_signal_connect(click, "pressed", G_CALLBACK(handle_pressed),
+                     GINT_TO_POINTER(idx));
+    g_signal_connect(click, "released", G_CALLBACK(handle_released),
+                     GINT_TO_POINTER(idx));
+    gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(click));
+    g_handle_buttons[idx] = btn;
     return btn;
 }
 
@@ -241,6 +297,10 @@ static gboolean on_key_pressed(GtkEventControllerKey *c, guint keyval,
         astrosession_keypad_set(g_session, m.value, 1);
     else if (m.kind == ASTRO_MAP_SYSACT)
         astrosession_sysaction_fire(g_session, m.value);
+    else if (m.kind == ASTRO_MAP_HANDLE) {
+        g_handle_mask |= (guint8)m.value;
+        astrosession_handle_set(g_session, 0, g_handle_mask);
+    }
     return TRUE;
 }
 
@@ -254,6 +314,10 @@ static void on_key_released(GtkEventControllerKey *c, guint keyval,
     astro_mapping m = bindings_resolve_keysym(astro_keysym_from_key_event(keyval));
     if (m.kind == ASTRO_MAP_KEY)
         astrosession_keypad_set(g_session, m.value, 0);
+    else if (m.kind == ASTRO_MAP_HANDLE) {
+        g_handle_mask &= (guint8)~m.value;
+        astrosession_handle_set(g_session, 0, g_handle_mask);
+    }
 }
 
 /* ---- construction ---- */
@@ -301,6 +365,15 @@ static GtkWidget *build_content(void)
     gtk_box_append(GTK_BOX(sys),
         make_sysact_button(ASTROSESSION_SYSACT_RESET_CONFIG, "Reset to CONFIG"));
     gtk_box_append(GTK_BOX(box), sys);
+
+    /* Hand controller row */
+    GtkWidget *handle = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    static const char *handle_labels[ASTRO_HANDLE_ACTION_COUNT] = {
+        "\xE2\x86\x91", "\xE2\x86\x93", "\xE2\x86\x90", "\xE2\x86\x92", "Trigger",
+    };
+    for (int h = 0; h < ASTRO_HANDLE_ACTION_COUNT; h++)
+        gtk_box_append(GTK_BOX(handle), make_handle_button(h, handle_labels[h]));
+    gtk_box_append(GTK_BOX(box), handle);
 
     /* Map row */
     GtkWidget *maprow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);

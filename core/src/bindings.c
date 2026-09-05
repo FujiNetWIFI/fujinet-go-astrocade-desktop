@@ -26,9 +26,20 @@ static slot s_defaults[ASTRO_TARGET_COUNT];
 static slot s_table[ASTRO_TARGET_COUNT];
 static int  s_ready;
 
+/* the 5 hand-controller actions, in ASTRO_TARGET_HANDLE order */
+static const uint8_t k_handle_bit[ASTRO_HANDLE_ACTION_COUNT] = {
+    ASTROSESSION_HANDLE_UP, ASTROSESSION_HANDLE_DOWN,
+    ASTROSESSION_HANDLE_LEFT, ASTROSESSION_HANDLE_RIGHT,
+    ASTROSESSION_HANDLE_TRIGGER,
+};
+
 static astro_map_kind target_kind(int target, int *value)
 {
-    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_COUNT) {
+    if (target >= ASTRO_TARGET_HANDLE && target < ASTRO_TARGET_COUNT) {
+        *value = k_handle_bit[target - ASTRO_TARGET_HANDLE];
+        return ASTRO_MAP_HANDLE;
+    }
+    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_HANDLE) {
         *value = target - ASTRO_TARGET_SYSACT;
         return ASTRO_MAP_SYSACT;
     }
@@ -47,8 +58,10 @@ static int default_keysym_for_key(int key)
 {
     switch (key) {
     case ASTROSESSION_KEY_C:     return 'c';
-    case ASTROSESSION_KEY_UP:    return ASTROSESSION_KEYSYM_UP;
-    case ASTROSESSION_KEY_DOWN:  return ASTROSESSION_KEYSYM_DOWN;
+    /* 'u'/'d', not the arrows -- the arrows drive the hand controller
+     * (ASTRO_TARGET_HANDLE) by default instead; see compute_defaults(). */
+    case ASTROSESSION_KEY_UP:    return 'u';
+    case ASTROSESSION_KEY_DOWN:  return 'd';
     case ASTROSESSION_KEY_PCT:   return '%';
     case ASTROSESSION_KEY_MR:    return 'r';
     case ASTROSESSION_KEY_MS:    return 's';
@@ -88,6 +101,15 @@ static void compute_defaults(void)
     s_defaults[ASTRO_TARGET_SYSACT + ASTROSESSION_SYSACT_RESET_GAME].keysym =
         ASTROSESSION_KEYSYM_BACKSPACE;
 
+    /* hand controller (player 0): arrows move, Space fires -- a keyboard
+     * fallback for when no gamepad is connected. Space is parsed by every
+     * frontend's key translator but otherwise unused. */
+    s_defaults[ASTRO_TARGET_HANDLE + 0].keysym = ASTROSESSION_KEYSYM_UP;
+    s_defaults[ASTRO_TARGET_HANDLE + 1].keysym = ASTROSESSION_KEYSYM_DOWN;
+    s_defaults[ASTRO_TARGET_HANDLE + 2].keysym = ASTROSESSION_KEYSYM_LEFT;
+    s_defaults[ASTRO_TARGET_HANDLE + 3].keysym = ASTROSESSION_KEYSYM_RIGHT;
+    s_defaults[ASTRO_TARGET_HANDLE + 4].keysym = ASTROSESSION_KEYSYM_SPACE;
+
     /* default gamepad buttons for the digits are left unbound; the frontend's
      * gamepad handling drives the hand controllers, not the keypad. */
 }
@@ -101,8 +123,14 @@ static const char *k_key_label[ASTROSESSION_KEY_COUNT] = {
     "Keypad CE", "Keypad 0", "Keypad .", "Keypad =",
 };
 
+static const char *k_handle_label[ASTRO_HANDLE_ACTION_COUNT] = {
+    "Move Up", "Move Down", "Move Left", "Move Right", "Trigger",
+};
+
 const char *bindings_target_label(int target)
 {
+    if (target >= ASTRO_TARGET_HANDLE && target < ASTRO_TARGET_COUNT)
+        return k_handle_label[target - ASTRO_TARGET_HANDLE];
     int v;
     astro_map_kind k = target_kind(target, &v);
     if (k == ASTRO_MAP_KEY)

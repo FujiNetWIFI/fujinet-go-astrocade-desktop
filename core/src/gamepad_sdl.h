@@ -5,9 +5,11 @@
  *
  * A background poll thread reads every connected gamepad (assigned to players
  * 0-3 by connection order), turning the D-pad / left stick into the handle
- * direction bits, the South button into the trigger, and the left-stick X
+ * direction bits, the South button into the trigger, and the right-stick X
  * into the knob (paddle); any gamepad button also resolves through the
- * bindings table to a keypad key or system action.
+ * bindings table to a keypad key or system action. A bundled community
+ * mapping DB (gamecontrollerdb_embedded.h) is loaded on start to cover
+ * controllers SDL's own bundled mappings don't recognize.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later

@@ -37,6 +37,7 @@ private:
     KeypadWindow *m_keypad = nullptr;
     DebuggerWindow *m_debugger = nullptr;
     bool m_sysactDown[ASTROSESSION_SYSACT_COUNT] = {};
+    uint8_t m_handleMask = 0;
     int m_sysactTimer = 0;
     void timerEvent(QTimerEvent *) override;
 };

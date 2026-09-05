@@ -29,6 +29,7 @@ static HWND g_keypad_window;
 static uint32_t g_frame[ASTROSESSION_FB_WIDTH * ASTROSESSION_FB_HEIGHT];
 static uint64_t g_serial;
 static int g_sysact_down[ASTROSESSION_SYSACT_COUNT];
+static uint8_t g_handle_mask;   /* player-0 hand controller, keyboard-driven bits */
 
 /* ---- display ---- */
 
@@ -208,8 +209,15 @@ static void forward_key(int keysym, int down)
         }
         return;
     }
-    if (m.kind == ASTRO_MAP_KEY)
+    if (m.kind == ASTRO_MAP_KEY) {
         astrosession_keypad_set(g_session, (astrosession_key)m.value, down);
+        return;
+    }
+    if (m.kind == ASTRO_MAP_HANDLE) {
+        if (down) g_handle_mask |= (uint8_t)m.value;
+        else g_handle_mask &= (uint8_t)~m.value;
+        astrosession_handle_set(g_session, 0, g_handle_mask);
+    }
 }
 
 /* ---- menu / actions ---- */

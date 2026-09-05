@@ -123,6 +123,28 @@ target_link_libraries(astro_core PUBLIC astro_roms)
 # runtime dependency whether or not it plays audio.
 find_package(SDL3 CONFIG REQUIRED)
 
+# ---- the community SDL_GameControllerDB mapping file -----------------------
+# SDL3's own bundled mappings can miss a controller (Bluetooth pads especially,
+# which often report differently than they do over USB) depending on how
+# recent the OS's packaged libSDL3 is. Embedding the more frequently updated
+# community database (zlib license, see third_party/gamecontrollerdb/LICENSE
+# and COMPLIANCE.md) and loading it in astro_gamepad_start() covers those gaps
+# on every target. See COMPLIANCE.md.
+set(ASTRO_GAMECONTROLLERDB_TXT
+  "${CMAKE_SOURCE_DIR}/third_party/gamecontrollerdb/gamecontrollerdb.txt")
+set(ASTRO_GAMECONTROLLERDB_C
+  "${CMAKE_CURRENT_BINARY_DIR}/gamecontrollerdb_embedded.c")
+add_custom_command(
+  OUTPUT "${ASTRO_GAMECONTROLLERDB_C}"
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_SOURCE_DIR}/tools/gamepad/embed-gamecontrollerdb.py"
+          "${ASTRO_GAMECONTROLLERDB_C}"
+          "${ASTRO_GAMECONTROLLERDB_TXT}"
+  DEPENDS "${CMAKE_SOURCE_DIR}/tools/gamepad/embed-gamecontrollerdb.py"
+          "${ASTRO_GAMECONTROLLERDB_TXT}"
+  COMMENT "Embedding the community SDL_GameControllerDB mappings"
+  VERBATIM)
+
 add_library(astro_session STATIC
   src/settings.c
   src/paths.c
@@ -133,6 +155,7 @@ add_library(astro_session STATIC
   src/audio_sdl.c
   src/gamepad_sdl.c
   src/fujinet_runtime.c
+  "${ASTRO_GAMECONTROLLERDB_C}"
 )
 set_target_properties(astro_session PROPERTIES C_STANDARD 11)
 target_include_directories(astro_session PRIVATE src)

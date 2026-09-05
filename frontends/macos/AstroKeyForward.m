@@ -30,6 +30,10 @@ int AstroKeysymFromEvent(NSEvent *event)
     return ASTROSESSION_KEYSYM_NONE;
 }
 
+/* player-0 hand controller, keyboard-driven bits (process-global, like the
+ * bindings table itself). */
+static uint8_t s_handleMask;
+
 void AstroForwardKeyEvent(astrosession *session, NSEvent *event, int down)
 {
     int keysym = AstroKeysymFromEvent(event);
@@ -39,6 +43,13 @@ void AstroForwardKeyEvent(astrosession *session, NSEvent *event, int down)
             astrosession_sysaction_fire(session, (astrosession_sysaction)m.value);
         return;
     }
-    if (m.kind == ASTRO_MAP_KEY)
+    if (m.kind == ASTRO_MAP_KEY) {
         astrosession_keypad_set(session, (astrosession_key)m.value, down);
+        return;
+    }
+    if (m.kind == ASTRO_MAP_HANDLE) {
+        if (down) s_handleMask |= (uint8_t)m.value;
+        else s_handleMask &= (uint8_t)~m.value;
+        astrosession_handle_set(session, 0, s_handleMask);
+    }
 }

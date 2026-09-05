@@ -31,6 +31,20 @@ single-file headers from https://github.com/floooh/chips (© Andre Weissflog,
 zlib/libpng license), vendored verbatim. zlib permits use and redistribution;
 the notice is retained in each header.
 
+## Gamepad mappings — SDL_GameControllerDB, zlib
+
+`third_party/gamecontrollerdb/gamecontrollerdb.txt` is vendored verbatim from
+https://github.com/mdqinc/SDL_GameControllerDB (© Sam Lantinga and
+contributors, zlib/libpng license — see
+`third_party/gamecontrollerdb/LICENSE`), the same community-maintained
+mapping file SDL itself ships a snapshot of. `tools/gamepad/
+embed-gamecontrollerdb.py` embeds it into `astro_session`
+(`gamecontrollerdb_embedded.c`, generated at build time, never committed);
+`astro_gamepad_start()` (`core/src/gamepad_sdl.c`) loads it over SDL's own
+bundled mappings so a controller the OS's packaged libSDL3 doesn't recognize
+still works. zlib permits use and redistribution; the notice is retained in
+the vendored LICENSE file.
+
 ## The FujiNet protocol and cartridge — fujinet-firmware, mixed
 
 `core/astro/fujinet_cart.c` is transposed from the firmware's own MAME cart

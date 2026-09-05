@@ -81,6 +81,34 @@ KeypadWindow::KeypadWindow(astrosession *session, QWidget *parent)
     }
     outer->addLayout(sysRow);
 
+    /* Hand controller row: Up/Down/Left/Right/Trigger, level-held like the
+     * keypad buttons (not fire-once like the sysact row above) since these
+     * drive astrosession_handle_set's live bitmask. Doubles as a way to test
+     * a binding on-screen without a physical gamepad. */
+    auto *handleRow = new QHBoxLayout;
+    static const char *handleNames[] = { "\xE2\x86\x91", "\xE2\x86\x93", "\xE2\x86\x90", "\xE2\x86\x92", "Trigger" };
+    /* order matches ASTRO_TARGET_HANDLE's layout (see bindings.c's k_handle_bit) */
+    static const uint8_t handleBits[] = {
+        ASTROSESSION_HANDLE_UP, ASTROSESSION_HANDLE_DOWN,
+        ASTROSESSION_HANDLE_LEFT, ASTROSESSION_HANDLE_RIGHT,
+        ASTROSESSION_HANDLE_TRIGGER,
+    };
+    for (int h = 0; h < ASTRO_HANDLE_ACTION_COUNT; ++h) {
+        int target = ASTRO_TARGET_HANDLE + h;
+        uint8_t bit = handleBits[h];
+        auto *btn = new PadButton(QString::fromUtf8(handleNames[h]),
+            [this, target, bit](bool down) {
+                if (m_mapState == PickTarget) { if (down) pickTarget(target); return; }
+                if (m_mapState == WaitInput) return;
+                if (down) m_handleMask |= bit;
+                else m_handleMask &= (uint8_t)~bit;
+                astrosession_handle_set(m_session, 0, m_handleMask);
+            });
+        m_handleButtons[h] = btn;
+        handleRow->addWidget(btn);
+    }
+    outer->addLayout(handleRow);
+
     auto *mapRow = new QHBoxLayout;
     m_mapBtn = new QPushButton("Map");
     connect(m_mapBtn, &QPushButton::clicked, this, [this] {
@@ -110,8 +138,10 @@ QPushButton *KeypadWindow::buttonForTarget(int target)
 {
     if (target >= 0 && target < ASTROSESSION_KEY_COUNT)
         return m_keyButtons[target];
-    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_COUNT)
+    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_HANDLE)
         return m_sysButtons[target - ASTRO_TARGET_SYSACT];
+    if (target >= ASTRO_TARGET_HANDLE && target < ASTRO_TARGET_COUNT)
+        return m_handleButtons[target - ASTRO_TARGET_HANDLE];
     return nullptr;
 }
 
@@ -166,6 +196,10 @@ void KeypadWindow::keyPressEvent(QKeyEvent *e)
         astrosession_keypad_set(m_session, (astrosession_key)m.value, 1);
     else if (m.kind == ASTRO_MAP_SYSACT)
         astrosession_sysaction_fire(m_session, (astrosession_sysaction)m.value);
+    else if (m.kind == ASTRO_MAP_HANDLE) {
+        m_handleMask |= (uint8_t)m.value;
+        astrosession_handle_set(m_session, 0, m_handleMask);
+    }
 }
 
 void KeypadWindow::keyReleaseEvent(QKeyEvent *e)
@@ -174,4 +208,8 @@ void KeypadWindow::keyReleaseEvent(QKeyEvent *e)
     astro_mapping m = bindings_resolve_keysym(astro_keysym_from_qt(e));
     if (m.kind == ASTRO_MAP_KEY)
         astrosession_keypad_set(m_session, (astrosession_key)m.value, 0);
+    else if (m.kind == ASTRO_MAP_HANDLE) {
+        m_handleMask &= (uint8_t)~m.value;
+        astrosession_handle_set(m_session, 0, m_handleMask);
+    }
 }

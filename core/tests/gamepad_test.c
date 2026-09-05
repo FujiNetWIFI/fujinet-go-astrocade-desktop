@@ -4,7 +4,10 @@
  * cancels, and a poll with nothing pressed reports no capture. (The actual
  * button->binding path needs hardware; this guards the headless contract the
  * session relies on -- start is best-effort and must never take the session
- * down when there's no gamepad.)
+ * down when there's no gamepad.) astro_gamepad_start() also loads the bundled
+ * community mapping DB (gamecontrollerdb_embedded.h) on every successful
+ * start exercised below -- this guards that a bad/missing embed can't take
+ * the session down either.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later

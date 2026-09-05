@@ -168,8 +168,15 @@ void MainWindow::forwardKey(int keysym, bool down)
         }
         return;
     }
-    if (m.kind == ASTRO_MAP_KEY)
+    if (m.kind == ASTRO_MAP_KEY) {
         astrosession_keypad_set(m_session, (astrosession_key)m.value, down);
+        return;
+    }
+    if (m.kind == ASTRO_MAP_HANDLE) {
+        if (down) m_handleMask |= (uint8_t)m.value;
+        else m_handleMask &= (uint8_t)~m.value;
+        astrosession_handle_set(m_session, 0, m_handleMask);
+    }
 }
 
 void MainWindow::keyPressEvent(QKeyEvent *e)

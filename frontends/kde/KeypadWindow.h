@@ -14,6 +14,7 @@
 
 extern "C" {
 #include "astrosession.h"
+#include "bindings.h"
 }
 
 class QLabel;
@@ -41,6 +42,8 @@ private:
     astrosession *m_session;
     QVector<QPushButton *> m_keyButtons;   /* 24 */
     QPushButton *m_sysButtons[ASTROSESSION_SYSACT_COUNT] = {};
+    QPushButton *m_handleButtons[ASTRO_HANDLE_ACTION_COUNT] = {};  /* Up/Down/Left/Right/Trigger */
+    uint8_t m_handleMask = 0;
     QPushButton *m_mapBtn = nullptr;
     QLabel *m_status = nullptr;
     MapState m_mapState = Idle;

@@ -14,9 +14,11 @@
 
 #include <SDL3/SDL.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "bindings.h"
+#include "gamecontrollerdb_embedded.h"
 #include "gamepad_sdl.h"
 
 #define MAX_PADS 4
@@ -125,14 +127,51 @@ static void apply_pad(pad_slot *slot, int player)
     }
 }
 
+/* A joystick SDL doesn't classify as a gamepad (SDL_IsGamepad() false) is
+ * invisible to SDL_GetGamepads() and so silently drives nothing -- the
+ * bundled community mapping DB (astro_gamecontrollerdb_text, loaded in
+ * astro_gamepad_start()) covers most of these, but if one still slips
+ * through, log its name/GUID once so it's diagnosable instead of doing
+ * nothing with no explanation. */
+#define MAX_LOGGED_UNRECOGNIZED 8
+static void log_unrecognized_joysticks(SDL_JoystickID *seen, int *seen_count)
+{
+    int jcount = 0;
+    SDL_JoystickID *jids = SDL_GetJoysticks(&jcount);
+    for (int i = 0; i < jcount; i++) {
+        SDL_JoystickID id = jids[i];
+        if (SDL_IsGamepad(id))
+            continue;
+        int already = 0;
+        for (int j = 0; j < *seen_count; j++)
+            if (seen[j] == id) { already = 1; break; }
+        if (already)
+            continue;
+        if (*seen_count < MAX_LOGGED_UNRECOGNIZED)
+            seen[(*seen_count)++] = id;
+
+        const char *name = SDL_GetJoystickNameForID(id);
+        char guid_str[64];
+        SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid_str, sizeof guid_str);
+        fprintf(stderr,
+                "astro_gamepad: joystick '%s' (GUID %s) is connected but not "
+                "recognized as a gamepad; no mapping available for it\n",
+                name ? name : "?", guid_str);
+    }
+    SDL_free(jids);
+}
+
 static void *poll_thread(void *arg)
 {
     (void)arg;
     pad_slot slots[MAX_PADS];
     memset(slots, 0, sizeof slots);
+    SDL_JoystickID logged_unrecognized[MAX_LOGGED_UNRECOGNIZED];
+    int logged_unrecognized_count = 0;
 
     while (s_running) {
         SDL_UpdateGamepads();
+        log_unrecognized_joysticks(logged_unrecognized, &logged_unrecognized_count);
 
         /* refresh the open set: assign the first MAX_PADS gamepads to slots */
         int count = 0;
@@ -168,6 +207,15 @@ int astro_gamepad_start(astrosession *s)
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD))
         return -1;
+
+    /* layer the community mapping DB over SDL's own bundled one -- best
+     * effort, a controller SDL already knows about is unaffected either way */
+    SDL_IOStream *db = SDL_IOFromConstMem(astro_gamecontrollerdb_text,
+                                          astro_gamecontrollerdb_text_size);
+    if (!db || SDL_AddGamepadMappingsFromIO(db, true) < 0)
+        fprintf(stderr, "astro_gamepad: failed to load the bundled controller "
+                        "DB: %s\n", SDL_GetError());
+
     s_running = 1;
     if (pthread_create(&s_thread, NULL, poll_thread, NULL) != 0) {
         s_running = 0;

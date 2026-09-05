@@ -42,6 +42,25 @@ int main(void)
     CHECK(m.kind == ASTRO_MAP_SYSACT && m.value == ASTROSESSION_SYSACT_RESET_GAME,
           "Backspace -> Reset Game by default");
 
+    /* the hand controller (Up/Down/Left/Right/Trigger) is keyboard-bindable
+     * too, by default on the arrows + Space -- 'u'/'d' take over the
+     * calculator keypad's own Up/Down so the arrows are free for this */
+    m = bindings_resolve_keysym(ASTROSESSION_KEYSYM_UP);
+    CHECK(m.kind == ASTRO_MAP_HANDLE && m.value == ASTROSESSION_HANDLE_UP,
+          "Up arrow -> hand controller Up by default");
+    m = bindings_resolve_keysym(ASTROSESSION_KEYSYM_LEFT);
+    CHECK(m.kind == ASTRO_MAP_HANDLE && m.value == ASTROSESSION_HANDLE_LEFT,
+          "Left arrow -> hand controller Left by default");
+    m = bindings_resolve_keysym(ASTROSESSION_KEYSYM_SPACE);
+    CHECK(m.kind == ASTRO_MAP_HANDLE && m.value == ASTROSESSION_HANDLE_TRIGGER,
+          "Space -> hand controller Trigger by default");
+    m = bindings_resolve_keysym('u');
+    CHECK(m.kind == ASTRO_MAP_KEY && m.value == ASTROSESSION_KEY_UP,
+          "'u' -> keypad Up by default (freed from the arrow)");
+    m = bindings_resolve_keysym('d');
+    CHECK(m.kind == ASTRO_MAP_KEY && m.value == ASTROSESSION_KEY_DOWN,
+          "'d' -> keypad Down by default (freed from the arrow)");
+
     /* remap keypad 1 to the '7' key: '7' now drives keypad 1, and keypad 7
      * loses its binding (steal) */
     int stole = -99;
@@ -52,6 +71,18 @@ int main(void)
           "'7' now drives keypad 1");
     CHECK(bindings_target_keysym(ASTROSESSION_KEY_7) == 0,
           "keypad 7 now unbound");
+
+    /* remap Trigger (last of the 5 hand-controller targets) to 'f': Space
+     * loses its binding (steal), same mechanism as the keypad remap above */
+    int trigger_target = ASTRO_TARGET_HANDLE + 4;
+    stole = -99;
+    bindings_set_keysym(s, trigger_target, 'f', &stole);
+    CHECK(stole == -1, "'f' was unbound, so nothing was stolen");
+    m = bindings_resolve_keysym('f');
+    CHECK(m.kind == ASTRO_MAP_HANDLE && m.value == ASTROSESSION_HANDLE_TRIGGER,
+          "'f' now drives Trigger");
+    m = bindings_resolve_keysym(ASTROSESSION_KEYSYM_SPACE);
+    CHECK(m.kind == ASTRO_MAP_NONE, "Space now unbound after the remap");
 
     astrosession_free(s);
 

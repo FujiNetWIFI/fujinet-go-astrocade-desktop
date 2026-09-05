@@ -29,6 +29,7 @@ struct _AstroWindow {
      * sysaction key (Backspace) fires Reset Game once, not ~60x/sec. Cleared
      * on focus loss. */
     gboolean sysact_down[ASTROSESSION_SYSACT_COUNT];
+    guint8 handle_mask;   /* player-0 hand controller, keyboard-driven bits */
     guint sysact_timer_id;
 };
 
@@ -77,8 +78,15 @@ static gboolean forward_key(AstroWindow *self, guint keyval, int down)
         }
         return TRUE;
     }
-    if (m.kind == ASTRO_MAP_KEY)
+    if (m.kind == ASTRO_MAP_KEY) {
         astrosession_keypad_set(self->session, m.value, down);
+        return TRUE;
+    }
+    if (m.kind == ASTRO_MAP_HANDLE) {
+        if (down) self->handle_mask |= (guint8)m.value;
+        else self->handle_mask &= (guint8)~m.value;
+        astrosession_handle_set(self->session, 0, self->handle_mask);
+    }
     return TRUE;
 }
 
@@ -139,6 +147,12 @@ static void on_focus_leave(GtkEventControllerFocus *controller,
     (void)controller;
     for (int i = 0; i < ASTROSESSION_SYSACT_COUNT; i++)
         self->sysact_down[i] = FALSE;
+    /* a held movement/trigger key never gets its release event once focus is
+     * gone -- without this the hand controller would stick */
+    if (self->handle_mask) {
+        self->handle_mask = 0;
+        astrosession_handle_set(self->session, 0, 0);
+    }
 }
 
 /* ---- actions ------------------------------------------------------------ */

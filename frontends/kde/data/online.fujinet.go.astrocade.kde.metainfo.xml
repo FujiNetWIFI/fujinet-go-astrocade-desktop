@@ -30,6 +30,17 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-09-04">
+      <description>
+        <p>
+          Gamepad and keyboard input: a bundled community controller
+          mapping database so more Bluetooth/USB pads are recognized, and
+          keyboard bindings for the hand controller (arrow keys to move,
+          Space to fire) for play without a gamepad, both remappable from
+          the keypad window's Map mode.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-09-04">
       <description>
         <p>

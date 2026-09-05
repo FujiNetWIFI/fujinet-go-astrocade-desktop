@@ -3,8 +3,9 @@
  * session.c (seed/reload at start), the keypad window's Map mode, and
  * gamepad_sdl.c (resolve a pad button on its polling thread). The Astrocade
  * has a single console keypad and no control discs, so a binding target is
- * just one of the 24 keypad keys or one of the 2 system actions -- far
- * simpler than the Intv port's per-side + disc model.
+ * one of the 24 keypad keys, one of the 2 system actions, or one of the 5
+ * player-0 hand-controller actions (a keyboard fallback for when no gamepad
+ * is connected) -- far simpler than the Intv port's per-side + disc model.
  *
  * Process-global storage (like the machine itself, a process singleton):
  * there is only ever one session's settings store live at a time.
@@ -22,22 +23,33 @@
 extern "C" {
 #endif
 
-/* A binding target: the 24 keypad keys, then the 2 system actions. */
+/* The player-0 hand controller's 5 keyboard-bindable actions (the physical
+ * joystick + trigger; the knob has no keyboard equivalent). Order matches
+ * k_handle_bit/k_handle_label in bindings.c. */
+#define ASTRO_HANDLE_ACTION_COUNT 5
+
+/* A binding target: the 24 keypad keys, then the 2 system actions, then the
+ * 5 hand-controller actions. */
 typedef enum {
     ASTRO_TARGET_KEYPAD = 0,                    /* + astrosession_key (0..23) */
     ASTRO_TARGET_SYSACT = ASTROSESSION_KEY_COUNT, /* + astrosession_sysaction */
-    ASTRO_TARGET_COUNT = ASTROSESSION_KEY_COUNT + ASTROSESSION_SYSACT_COUNT,
+    ASTRO_TARGET_HANDLE = ASTRO_TARGET_SYSACT + ASTROSESSION_SYSACT_COUNT,
+                                                 /* + index into k_handle_bit */
+    ASTRO_TARGET_COUNT = ASTRO_TARGET_HANDLE + ASTRO_HANDLE_ACTION_COUNT,
 } astro_target_base;
 
 typedef enum {
     ASTRO_MAP_NONE = 0,
     ASTRO_MAP_KEY,      /* a keypad key -- value is an astrosession_key */
     ASTRO_MAP_SYSACT,   /* a system action -- value is an astrosession_sysaction */
+    ASTRO_MAP_HANDLE,   /* the player-0 hand controller -- value is an
+                          * ASTROSESSION_HANDLE_* bit (astrosession.h) */
 } astro_map_kind;
 
 typedef struct {
     astro_map_kind kind;
-    int value;          /* astrosession_key or astrosession_sysaction */
+    int value;          /* astrosession_key / astrosession_sysaction /
+                          * ASTROSESSION_HANDLE_* bit, depending on kind */
 } astro_mapping;
 
 /* Reload the table: every target to its default, then overridden by whatever
