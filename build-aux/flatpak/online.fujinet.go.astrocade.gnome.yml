@@ -48,9 +48,34 @@ modules:
         tag: release-3.4.12
         commit: f87239e71e42da91ca317a12eefb82cfbf3393eb
 
+  # The FujiNet runtime's vendored build_webui.py imports PyYAML and Jinja2
+  # from whatever python3 tools/fujinet/build-fujinet-desktop.sh runs --
+  # every CI job's runner already has both system-wide, but org.gnome.Sdk's
+  # python3 has neither and the sandboxed build step can't pip install them
+  # (no network). Installed to a fixed, python-version-independent path so
+  # the fujinet-go-astrocade module below can just PYTHONPATH at it.
+  - name: python3-fujinet-webui-deps
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-build-isolation --no-index --find-links="file://${PWD}"
+        --target=/app/fujinet-pyshims PyYAML==6.0.3 MarkupSafe==3.0.3 Jinja2==3.1.6
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz
+        sha256: d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
+      - type: file
+        url: https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz
+        sha256: 722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698
+      - type: file
+        url: https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz
+        sha256: 0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d
+
   - name: fujinet-go-astrocade
     buildsystem: cmake-ninja
     builddir: true
+    build-options:
+      env:
+        PYTHONPATH: /app/fujinet-pyshims
     config-opts:
       - -DFRONTEND=gnome
       # The Bally system ROMs are copyrighted firmware with no
