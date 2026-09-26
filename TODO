@@ -9,7 +9,7 @@ M0 — scaffold  [x]
   [x] root CMakeLists (VERSION single-source, FRONTEND switch, GNUInstallDirs
       at top), .gitignore with !build-aux/, LICENSE
   [x] cmake/Dependencies.cmake — fujinet-firmware pinned to astrocade-bringup
-      (20e89ead5); the branch's pico/astrocade is checked at configure time
+      (20e89ead5, since moved to 21624d70a); the branch's pico/astrocade is checked at configure time
   [x] cmake/StageFujiProto.cmake — stages the cartridge's own protocol
       sources into core/astro/fuji-generated (identical-by-construction; the
       firmware's emu/apply.sh does the same graft into MAME)

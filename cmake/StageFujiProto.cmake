@@ -43,8 +43,8 @@ set(FUJI_PROTO_DIR "${FUJINET_DIR}/pico/astrocade")
 if(NOT EXISTS "${FUJI_PROTO_DIR}/firmware/include/fuji_mailbox.h")
   message(FATAL_ERROR
     "${FUJINET_DIR} has no pico/astrocade/firmware/include/fuji_mailbox.h -- "
-    "the pin must be on the astrocade-bringup branch (or master once it has "
-    "merged); see cmake/Dependencies.cmake.")
+    "the pin must include the merged pico/astrocade port (master since "
+    "#1605); see cmake/Dependencies.cmake.")
 endif()
 
 # The exact file list apply.sh grafts into MAME, plus fujiconfigrom.h (the

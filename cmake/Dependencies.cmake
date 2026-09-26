@@ -32,14 +32,17 @@
 
 find_package(Git QUIET)
 
-# fujinet-firmware, branch astrocade-bringup (20e89ead5). The branch head at
-# the time this repository was started; contains the complete pico/astrocade
-# port (protocol v2 banking, the baked-in real CONFIG client, the MAME cart
-# device and CI). Recorded in three places -- here and in both flatpak
-# manifests (build-aux/flatpak/*.yml) -- and the pinned commit has moved on
-# the server before in a sibling repo, so treat a failed fetch of this exact
-# hash as "the branch was rebased/merged", not as a network fault.
-set(FUJINET_COMMIT "20e89ead5d88e8c441b448d231d13ca63aa71dc5")
+# fujinet-firmware, branch astrocade-config-rom-refresh (21624d70a): master
+# (which carries the merged pico/astrocade port, #1605, plus the later
+# fuji_store/flash-erase fixes) plus the refreshed baked CONFIG client from
+# fujinet-config astrocade/ -- FujiNetWIFI/fujinet-firmware PR #1705. Keep
+# that branch until the pin moves onto master: a plain clone only fetches
+# branches, so this commit must stay reachable from one. Recorded in three
+# places -- here and in both flatpak manifests (build-aux/flatpak/*.yml) --
+# and a squash-merge leaves the pinned commit off master, so treat a failed
+# fetch of this exact hash as "the branch was deleted", not as a network
+# fault.
+set(FUJINET_COMMIT "21624d70a7d75e193b0e2e3e4537ccc626f81b52")
 set(FUJINET_URL "https://github.com/FujiNetWIFI/fujinet-firmware")
 
 # astro_provide_dependency(NAME <n> PATH <p> SENTINEL <file> OVERRIDE <VAR>

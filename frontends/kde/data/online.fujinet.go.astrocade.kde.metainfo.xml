@@ -30,6 +30,16 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.1" date="2026-09-25">
+      <description>
+        <p>
+          Updated FujiNet CONFIG: all text now fits the Astrocade's 8-pixel
+          font, and long footers no longer spill onto the line below and
+          corrupt the current path. Also picks up the latest FujiNet
+          Astrocade cartridge firmware.
+        </p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-09-04">
       <description>
         <p>

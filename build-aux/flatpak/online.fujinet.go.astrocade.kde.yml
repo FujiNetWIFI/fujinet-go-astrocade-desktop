@@ -101,12 +101,13 @@ modules:
           # and must come through with the rest of the tree.
           - third_party/fujinet-firmware
           - tools/fujinet/work
-      # Pinned exactly as cmake/Dependencies.cmake: the astrocade-bringup
-      # commit. astro_provide_dependency() skips its own fetch once it finds
-      # build.sh (the SENTINEL) already here.
+      # Pinned exactly as cmake/Dependencies.cmake (see the comment there
+      # for which branch keeps the commit reachable).
+      # astro_provide_dependency() skips its own fetch once it finds build.sh
+      # (the SENTINEL) already here.
       - type: git
         url: https://github.com/FujiNetWIFI/fujinet-firmware
-        commit: 20e89ead5d88e8c441b448d231d13ca63aa71dc5
+        commit: 21624d70a7d75e193b0e2e3e4537ccc626f81b52
         dest: third_party/fujinet-firmware
       # Same reasoning: the sandboxed build step has no network access, but
       # tools/fujinet/build-fujinet-desktop.sh needs mbedTLS 3.x and
