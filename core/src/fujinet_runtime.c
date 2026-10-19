@@ -29,6 +29,7 @@
 
 #include "compat.h"
 #include "dynlib.h"
+#include "fujitcp.h"
 #include "session_internal.h"
 
 typedef int (*start_runtime_fn)(const char *root, const char *config,
@@ -162,4 +163,14 @@ int astrosession_fujinet_copy_log(astrosession *s, char *dst, int max)
     copy_log_fn fn = g_copy_log;
     pthread_mutex_unlock(&g_mtx);
     return fn ? fn(dst, max) : 0;
+}
+
+int astrosession_fujinet_running(const astrosession *s)
+{
+    return s->fujinet_running;
+}
+
+int astrosession_fujinet_link(const astrosession *s)
+{
+    return astrosession_is_running(s) && fujitcp_active();
 }

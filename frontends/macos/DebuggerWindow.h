@@ -5,6 +5,8 @@
  */
 #import <Cocoa/Cocoa.h>
 
-@interface DebuggerWindow : NSWindowController <NSWindowDelegate>
-+ (void)showDebugger;
+#include "astrosession.h"
+
+@interface DebuggerWindow : NSWindowController <NSWindowDelegate, NSTabViewDelegate>
++ (void)showDebuggerForSession:(astrosession *)session;
 @end

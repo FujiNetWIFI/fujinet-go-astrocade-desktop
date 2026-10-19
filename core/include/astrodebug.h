@@ -13,7 +13,8 @@
  * THREADING. Everything here is called from a UI thread except the internal
  * hook. While paused the emulator thread is parked in the hook, so the
  * machine is quiescent and reading its registers/memory from the UI thread is
- * safe; those calls are valid only while paused and return 0 otherwise.
+ * safe; those calls are valid only while paused and return 0 otherwise. The
+ * FujiNet trace is the exception: it has its own lock and works any time.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -90,6 +91,27 @@ int  astrodebug_breakpoint_toggle(astrodebug *d, uint16_t addr);
 int  astrodebug_breakpoint_is_set(astrodebug *d, uint16_t addr);
 void astrodebug_breakpoint_clear_all(astrodebug *d);
 int  astrodebug_breakpoint_list(astrodebug *d, uint16_t *out, int max);
+
+/* ---- FujiNet: the cartridge's FujiBus packets, both ways (safe while
+ * running). Always on from session start, so it holds what happened before
+ * anyone opened the debugger. ---- */
+typedef struct {
+    uint64_t serial;
+    int      to_host;       /* 1: FujiNet -> Astrocade, 0: Astrocade -> FujiNet */
+    int      device, command, length;   /* from the FujiBus header, -1 if short */
+    int      nbytes;
+    uint8_t  data[64];      /* the decoded packet's first bytes */
+    char     text[96];      /* "Astrocade -> FujiNet 70 E8 GET ADAPTERCONFIG (6 bytes)" */
+    uint32_t repeat;        /* consecutive identical exchanges folded in (x N) */
+} astrodebug_fuji_packet;
+
+/* Start the trace: the session calls this before the machine starts. */
+void astrodebug_fujinet_install(astrodebug *d);
+/* The newest `max` packets, oldest first. Returns how many. */
+int  astrodebug_fujinet_trace(astrodebug *d, astrodebug_fuji_packet *out, int max);
+void astrodebug_fujinet_trace_clear(astrodebug *d);
+/* The cartridge's BoIP link and mailbox, as text lines. Returns its length. */
+int  astrodebug_fujinet_state(astrodebug *d, char *dst, int dstsz);
 
 /* Process-wide singleton (one machine, one debugger); never NULL. */
 astrodebug *astrodebug_get(void);

@@ -12,7 +12,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollBar>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -25,22 +28,58 @@
 #define DISASM_LINES 24
 #define MEM_ROWS 16
 #define MEM_COLS 16
+#define TRACE_MAX 512
+
+enum { PageCpu, PageVideo, PageFujinet };
+
+static QFont monoFont()
+{
+    QFont f("monospace");
+    f.setStyleHint(QFont::TypeWriter);
+    return f;
+}
 
 static QLabel *monoLabel()
 {
     auto *l = new QLabel;
-    QFont f("monospace");
-    f.setStyleHint(QFont::TypeWriter);
-    l->setFont(f);
+    l->setFont(monoFont());
     l->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);
     return l;
 }
 
-DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
-    : QWidget(parent, Qt::Window)
+static QLabel *heading(const char *text)
 {
-    (void)session;
+    auto *l = new QLabel(text);
+    QFont f = l->font();
+    f.setBold(true);
+    l->setFont(f);
+    return l;
+}
+
+/* Whether a view's reader is at its end (a log then follows new lines). */
+static bool atEnd(QPlainTextEdit *v)
+{
+    return v->verticalScrollBar()->value() >= v->verticalScrollBar()->maximum() - 1;
+}
+
+/* Replaces a view's text where the reader left it (a refresh must not throw
+ * a scrolled view back to its top), or, following, at its end. */
+static void setText(QPlainTextEdit *v, const QString &text, bool follow)
+{
+    if (v->toPlainText() == text) {
+        if (follow) v->verticalScrollBar()->setValue(v->verticalScrollBar()->maximum());
+        return;
+    }
+    const int top = v->verticalScrollBar()->value(), left = v->horizontalScrollBar()->value();
+    v->setPlainText(text);
+    v->verticalScrollBar()->setValue(follow ? v->verticalScrollBar()->maximum() : top);
+    v->horizontalScrollBar()->setValue(left);
+}
+
+DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
+    : QWidget(parent, Qt::Window), m_session(session)
+{
     m_dbg = astrodebug_get();
     astrodebug_set_engaged(m_dbg, 1);
 
@@ -121,6 +160,46 @@ DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
     vidLayout->addWidget(framed("Registers", m_vidText));
     vidLayout->addStretch(1);
     tabs->addTab(vid, "Video chip");
+
+    /* ---- FujiNet tab ---- */
+    auto *fuji = new QSplitter(Qt::Horizontal);
+    auto *left = new QWidget;
+    auto *lv = new QVBoxLayout(left);
+    lv->addWidget(heading("FujiBus packets (SLIP-decoded)"));
+    auto *row = new QHBoxLayout;
+    m_fujiNote = new QLabel;
+    m_fujiNote->setStyleSheet("color: gray;");
+    m_fujiNote->setWordWrap(true);
+    auto *clear = new QPushButton("Clear");
+    connect(clear, &QPushButton::clicked, this, [this] {
+        astrodebug_fujinet_trace_clear(m_dbg);
+        refreshFujinet(true);
+    });
+    row->addWidget(m_fujiNote, 1);
+    row->addWidget(clear);
+    lv->addLayout(row);
+    m_fujiText = new QPlainTextEdit;
+    m_fujiText->setReadOnly(true);
+    m_fujiText->setFont(monoFont());
+    m_fujiText->setLineWrapMode(QPlainTextEdit::NoWrap);
+    lv->addWidget(m_fujiText, 1);
+    left->setMinimumWidth(480);
+    auto *right = new QWidget;
+    auto *rv = new QVBoxLayout(right);
+    rv->addWidget(heading("FujiNet cartridge"));
+    m_fujiState = monoLabel();
+    rv->addWidget(m_fujiState, 1);
+    right->setMinimumWidth(340);
+    fuji->addWidget(left);
+    fuji->addWidget(right);
+    fuji->setStretchFactor(0, 3);
+    fuji->setStretchFactor(1, 2);
+    fuji->setChildrenCollapsible(false);
+    tabs->addTab(fuji, "FujiNet");
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int page) {
+        if (page == PageFujinet) refreshFujinet(false);
+    });
+    m_tabs = tabs;
 
     outer->addWidget(tabs);
 
@@ -214,10 +293,57 @@ void DebuggerWindow::refreshCpu()
     m_mem->setText(mem);
 }
 
+void DebuggerWindow::refreshFujinet(bool force)
+{
+    static astrodebug_fuji_packet p[TRACE_MAX];
+    char state[2048];
+    const int n = astrodebug_fujinet_trace(m_dbg, p, TRACE_MAX);
+
+    if (astrosession_fujinet_link(m_session))
+        m_fujiNote->setText(QStringLiteral("FujiNet cartridge, connected."));
+    else if (astrosession_fujinet_running(m_session))
+        m_fujiNote->setText(QStringLiteral("FujiNet cartridge, not connected."));
+    else
+        m_fujiNote->setText(QStringLiteral(
+            "FujiNet cartridge, not connected (the FujiNet runtime is not running)."));
+    astrodebug_fujinet_state(m_dbg, state, sizeof state);
+    m_fujiState->setText(QString::fromUtf8(state));
+
+    if (!force && n == m_fujiCount && (n == 0 || p[n - 1].serial == m_fujiLast))
+        return;
+    m_fujiCount = n;
+    m_fujiLast = n > 0 ? p[n - 1].serial : 0;
+    QByteArray t;
+    char hex[16];
+    for (int i = 0; i < n; ++i) {
+        if (i) t += '\n';
+        t += p[i].text;
+        if (p[i].repeat > 1) {
+            std::snprintf(hex, sizeof hex, "%u", p[i].repeat);
+            t += " \xc3\x97";
+            t += hex;
+        }
+        t += "\n     ";
+        for (int k = 0; k < p[i].nbytes && k < (int)sizeof p[i].data; ++k) {
+            std::snprintf(hex, sizeof hex, "%02X ", p[i].data[k]);
+            t += hex;
+        }
+        if (p[i].nbytes > (int)sizeof p[i].data) t += "\xe2\x80\xa6";
+    }
+    if (n == 0) t = "(no FujiBus packets since the trace was cleared)";
+    setText(m_fujiText, QString::fromUtf8(t), force || atEnd(m_fujiText));
+}
+
 void DebuggerWindow::tick()
 {
     refreshVideo();
     std::uint64_t s = astrodebug_stop_serial(m_dbg);
+    /* FujiNet: on a stop, and twice a second while running */
+    if (m_tabs->currentIndex() == PageFujinet &&
+        (s != m_lastSerial || (!astrodebug_is_paused(m_dbg) && ++m_fujiTicks >= 5))) {
+        m_fujiTicks = 0;
+        refreshFujinet(false);
+    }
     if (s != m_lastSerial || !astrodebug_is_paused(m_dbg)) {
         m_lastSerial = s;
         refreshCpu();

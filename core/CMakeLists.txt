@@ -34,6 +34,7 @@ set(ASTRO_CORE_SOURCES
   astro/host.c
   astro/fujinet_cart.c
   debugger/debugger.c
+  debugger/fujitrace.c
   debugger/vidview.c
   "${GEN}/fujimail.c"
   "${GEN}/fujibus.c"
@@ -74,7 +75,7 @@ endif()
 # our own modules are warning-clean; the staged firmware sources are vendored.
 set_source_files_properties(
   astro/machine.c astro/video.c astro/sound.c astro/host.c astro/fujinet_cart.c
-  debugger/debugger.c debugger/vidview.c
+  debugger/debugger.c debugger/fujitrace.c debugger/vidview.c
   PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # ---- the Bally system ROMs -------------------------------------------------
@@ -202,6 +203,12 @@ add_executable(debug_test tests/debug_test.c)
 target_link_libraries(debug_test astro_core)
 add_test(NAME debug_test COMMAND debug_test "${ASTRO_ROM_DIR_SRC}/astro.bin")
 set_tests_properties(debug_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# The FujiNet trace's decoder on synthetic bytes: no ROM, no network.
+add_executable(fujitrace_test tests/fujitrace_test.c)
+target_link_libraries(fujitrace_test astro_core)
+target_include_directories(fujitrace_test PRIVATE debugger)
+add_test(NAME fujitrace_test COMMAND fujitrace_test)
 
 # astro_core must carry no SDL: this links it ALONE.
 add_executable(no_sdl_link_test tests/no_sdl_link_test.c)

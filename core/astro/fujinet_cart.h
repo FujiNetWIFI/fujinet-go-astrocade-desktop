@@ -28,6 +28,7 @@
 #define ASTRO_FUJINET_CART_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "astromap.h"
@@ -88,6 +89,17 @@ void astro_cart_stop(astro_cart_t *c);
  * 0x2000-0x3FFF). `commit` false is the debugger's no-side-effects read:
  * the value comes back but hotspots do not fire and banks do not move. */
 uint8_t astro_cart_read(astro_cart_t *c, uint16_t offset, bool commit);
+
+/* The debugger's FujiNet trace: every frame the cart sends (dir 1) and
+ * receives (dir 0), SLIP-framed, on the machine thread. Set it before the
+ * machine starts; NULL turns it off. */
+typedef void (*astro_cart_trace_fn)(int dir, const uint8_t *buf, size_t len);
+void astro_cart_set_trace(astro_cart_trace_fn fn);
+
+/* The link and mailbox state, as text lines for the debugger. Read from the
+ * UI thread while the machine runs: single bytes and flags, display only.
+ * Returns its length. */
+int astro_cart_describe(const astro_cart_t *c, char *dst, int dstsz);
 
 #ifdef __cplusplus
 }

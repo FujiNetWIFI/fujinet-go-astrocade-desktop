@@ -1,6 +1,6 @@
 /*
- * DebuggerWindow -- Qt6 two-tab debugger (Z80 / Video chip). See the GNOME
- * dbg_window.c for the shared design.
+ * DebuggerWindow -- Qt6 three-tab debugger (Z80 / Video chip / FujiNet). See
+ * the GNOME dbg_window.c for the shared design.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -19,6 +19,8 @@ extern "C" {
 
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
+class QTabWidget;
 
 class DebuggerWindow : public QWidget {
     Q_OBJECT
@@ -32,7 +34,9 @@ private slots:
 private:
     void refreshCpu();
     void refreshVideo();
+    void refreshFujinet(bool force);
 
+    astrosession *m_session;
     astrodebug *m_dbg;
     std::uint64_t m_lastSerial = ~0ULL;
     std::uint16_t m_memAddr = 0;
@@ -45,6 +49,14 @@ private:
     QLabel *m_bitmap = nullptr;
     QLabel *m_palette = nullptr;
     QLabel *m_vidText = nullptr;
+
+    QTabWidget *m_tabs = nullptr;
+    QLabel *m_fujiNote = nullptr;
+    QPlainTextEdit *m_fujiText = nullptr;
+    QLabel *m_fujiState = nullptr;
+    int m_fujiCount = -1;
+    std::uint64_t m_fujiLast = 0;
+    int m_fujiTicks = 0;
 
     std::uint32_t m_scratch[ASTROVID_MAX_PIXELS];
 };

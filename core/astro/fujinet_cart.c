@@ -233,6 +233,159 @@ static void do_swap(astro_cart_t *c)
 }
 
 /*-------------------------------------------------
+    the debugger's FujiNet trace (not in MAME's model)
+-------------------------------------------------*/
+
+static astro_cart_trace_fn s_trace = NULL;
+
+void astro_cart_set_trace(astro_cart_trace_fn fn)
+{
+    s_trace = fn;
+}
+
+/* fujitcp keeps its wire buffers to itself, so the trace gets each frame
+ * rebuilt. A sent frame comes from the encoder and buffer size fujitcp
+ * uses, so it is byte-identical. */
+static void trace_sent(size_t cap, uint8_t device, uint8_t command,
+                       const fb_param_t *params, unsigned nparams,
+                       const uint8_t *payload, uint16_t payload_len)
+{
+    uint8_t frame[FN_TX_MAX + 64];
+    size_t n;
+
+    if (!s_trace || !fujitcp_active())
+        return;
+    n = fujibus_build_request(device, command, params, nparams, payload,
+                              payload_len, frame, cap);
+    if (n)
+        s_trace(1, frame, n);
+}
+
+/* A received frame is re-encoded from what was parsed out of it (replies
+ * and pushes carry no parameters), a chunk at a time: a reply can outgrow
+ * fujibus_build_request's buffer. */
+static void trace_received(uint8_t device, uint8_t command,
+                           const uint8_t *data, unsigned len)
+{
+    const unsigned total = 6 + len;
+    uint8_t hdr[6], out[256];
+    unsigned i, n = 0;
+    uint16_t ck = 0;
+
+    if (!s_trace)
+        return;
+    hdr[0] = device;
+    hdr[1] = command;
+    hdr[2] = (uint8_t)total;
+    hdr[3] = (uint8_t)(total >> 8);
+    hdr[4] = 0;
+    hdr[5] = 0;
+    /* fujibus.c's checksum: a byte sum with end-around carry */
+    for (i = 0; i < total; i++)
+    {
+        ck += i < 6 ? hdr[i] : data[i - 6];
+        ck = (uint16_t)((ck >> 8) + (ck & 0xff));
+    }
+    hdr[4] = (uint8_t)ck;
+
+    out[n++] = 0xC0;
+    for (i = 0; i < total; i++)
+    {
+        const uint8_t b = i < 6 ? hdr[i] : data[i - 6];
+        if (n + 3 > sizeof out)
+        {
+            s_trace(0, out, n);
+            n = 0;
+        }
+        if (b == 0xC0 || b == 0xDB)
+        {
+            out[n++] = 0xDB;
+            out[n++] = b == 0xC0 ? 0xDC : 0xDD;
+        }
+        else
+            out[n++] = b;
+    }
+    out[n++] = 0xC0;
+    s_trace(0, out, n);
+}
+
+static const char *err_name(uint8_t err)
+{
+    switch (err)
+    {
+    case FN_ERR_OK:       return "ok";
+    case FN_ERR_NOLINK:   return "no link";
+    case FN_ERR_TIMEOUT:  return "timeout";
+    case FN_ERR_BADFRAME: return "bad frame";
+    case FN_ERR_TOOBIG:   return "too big";
+    default:              return "?";
+    }
+}
+
+static const char *boot_err_name(uint8_t err)
+{
+    switch (err)
+    {
+    case FN_BOOT_ERR_TOOBIG:    return "too big";
+    case FN_BOOT_ERR_TRUNCATED: return "truncated";
+    case FN_BOOT_ERR_NOMAP:     return "no mapper fits";
+    case FN_BOOT_ERR_STOREBUSY: return "store busy";
+    default:                    return "?";
+    }
+}
+
+int astro_cart_describe(const astro_cart_t *c, char *dst, int dstsz)
+{
+    const uint8_t *w = c->window;
+    int n = 0;
+#define P(...) do { if (n < dstsz) n += snprintf(dst + n, dstsz - n, __VA_ARGS__); } while (0)
+
+    P("BoIP link     %s\n", fujitcp_active() ? "connected" : "not connected");
+    if (c->app_store)
+        P("Image         %s, %u pages\n", kind_name(ASTROMAP_APPBANK), c->app_npages);
+    else if (c->hot_image)
+        P("Image         %s\n",
+          kind_name(c->hot_mask == 0x3F ? ASTROMAP_GAME256 : ASTROMAP_GAME512));
+    else
+        P("Image         %s 8K\n", kind_name(ASTROMAP_FLAT));
+    if (c->have_staged)
+        P("Staged        %s, %u bytes%s\n", kind_name(c->staged_plan.kind),
+          c->staged_image ? (unsigned)c->staged_image_size : ASTRO_CART_WINDOW,
+          c->swap_armed ? ", swap armed" : "");
+
+    if (!c->mailbox_live)
+    {
+        P("Mailbox       dead (the image does not claim it)\n");
+    }
+    else
+    {
+        const uint8_t st = w[FN_R_STATUS], reply = w[FN_R_REPLY_CMD];
+        const uint8_t boot = w[FN_R_BOOT_STATE];
+
+        P("Mailbox       live, protocol %u\n", w[FN_R_PROTO_VER]);
+        P("ACKSEQ        %02X\n", w[FN_R_ACKSEQ]);
+        P("Status        %s, %s\n", (st & FN_R_STATUS_LINK) ? "link up" : "link down",
+          (st & FN_R_STATUS_BUSY) ? "busy" : "idle");
+        P("Last result   %u %s\n", w[FN_R_ERR], err_name(w[FN_R_ERR]));
+        P("Reply         %02X%s, %u bytes\n", reply,
+          reply == FUJICMD_ACK ? " ACK" : reply == FUJICMD_NAK ? " NAK" : "",
+          (unsigned)(w[FN_R_RXLEN_LO] | (w[FN_R_RXLEN_HI] << 8)));
+        if (boot == FN_BOOT_XFER)
+            P("Boot          receiving, %u%%\n", w[FN_R_BOOT_PCT]);
+        else if (boot == FN_BOOT_READY)
+            P("Boot          image staged\n");
+        else if (boot == FN_BOOT_FAILED)
+            P("Boot          failed, %s\n", boot_err_name(w[FN_R_BOOT_ERR]));
+        else
+            P("Boot          idle\n");
+    }
+#undef P
+    if (dstsz > 0 && n >= dstsz)
+        n = dstsz - 1;
+    return n;
+}
+
+/*-------------------------------------------------
     C port callbacks
 -------------------------------------------------*/
 
@@ -246,18 +399,54 @@ static bool c_link_up(void)
     return fujitcp_active();
 }
 
+static fb_status_t c_transact(uint8_t device, uint8_t command,
+                              const fb_param_t *params, unsigned nparams,
+                              const uint8_t *payload, uint16_t payload_len,
+                              uint32_t timeout_ms, fb_reply_t *reply)
+{
+    fb_status_t st;
+
+    trace_sent(FN_TX_MAX + 64, device, command, params, nparams, payload,
+               payload_len);
+    st = fujitcp_transact(device, command, params, nparams, payload,
+                          payload_len, timeout_ms, reply);
+    if (st == FB_OK)
+        trace_received(reply->device, reply->command, reply->data,
+                       reply->data_len);
+    return st;
+}
+
+static void c_send_bare(uint8_t device, uint8_t command,
+                        const uint8_t *payload, uint16_t payload_len)
+{
+    trace_sent(64, device, command, NULL, 0, payload, payload_len);
+    fujitcp_send_bare(device, command, payload, payload_len);
+}
+
+/* DBC push frames are consumed inside fujitcp_transact; the trace rebuilds
+ * them from what fujimail hands the stream callbacks. */
 static uint8_t c_stream_open(int stream, uint32_t size)
 {
+    const uint8_t open[5] = {
+        (uint8_t)stream, (uint8_t)size, (uint8_t)(size >> 8),
+        (uint8_t)(size >> 16), (uint8_t)(size >> 24),
+    };
+
+    trace_received(FUJI_DEVICEID_DBC, NETCMD_OPEN, open, sizeof open);
     return cart_stream_open(s_cart, stream, size);
 }
 
 static void c_stream_write(int stream, const uint8_t *chunk, unsigned len)
 {
+    trace_received(FUJI_DEVICEID_DBC, NETCMD_WRITE, chunk, len);
     rx_append(s_cart, stream, chunk, len);
 }
 
 static uint8_t c_stream_close(int stream, uint32_t got, bool aborted)
 {
+    static const uint8_t abort_flag = 0x01;
+
+    trace_received(FUJI_DEVICEID_DBC, NETCMD_CLOSE, &abort_flag, aborted ? 1 : 0);
     return cart_stream_close(s_cart, stream, got, aborted);
 }
 
@@ -301,8 +490,8 @@ static void c_on_dbc(fujimail_dbc_ev_t ev, int stream, uint32_t expect,
 static const fujimail_port_t astro_port = {
     c_poke,
     c_link_up,
-    fujitcp_transact,
-    fujitcp_send_bare,
+    c_transact,
+    c_send_bare,
     c_stream_open,
     c_stream_write,
     c_stream_close,
@@ -316,8 +505,8 @@ static const fujimail_port_t astro_port = {
 static const fujimail_port_t astro_port_quiet = {
     c_poke,
     c_link_up,
-    fujitcp_transact,
-    fujitcp_send_bare,
+    c_transact,
+    c_send_bare,
     c_stream_open,
     c_stream_write,
     c_stream_close,

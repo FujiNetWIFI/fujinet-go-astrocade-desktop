@@ -1,5 +1,5 @@
 /*
- * The debugger window: two tabs over the singleton astrodebug engine.
+ * The debugger window: three tabs over the singleton astrodebug engine.
  *
  *  CPU    -- a control row (Pause/Resume, Step, Step Over, Step Out), the Z80
  *            register file, a disassembly listing from the current PC, and a
@@ -7,9 +7,13 @@
  *  Video  -- the live screen, the screen-RAM bitmap, the 512-pen palette
  *            strip, and the full decoded data-chip + sound register text
  *            (every register the Nutting manual documents).
+ *  FujiNet -- every FujiBus packet between the console and FujiNet, both
+ *            ways, with hex (always traced, from session start), beside the
+ *            cartridge's link and mailbox state.
  *
  * A GtkTimer polls astrodebug_stop_serial and refreshes when it changes,
- * rather than being called back on the emulator thread. One RGBA scratch
+ * rather than being called back on the emulator thread; the FujiNet tab also
+ * refreshes twice a second while the machine runs. One RGBA scratch
  * buffer, sized to the MAX of all the Video renders (the sibling ports'
  * Windows debugger corrupted memory sizing it to only one).
  *
@@ -25,6 +29,9 @@
 #define DISASM_LINES 24
 #define MEM_ROWS 16
 #define MEM_COLS 16
+#define TRACE_MAX 512
+
+enum { PAGE_CPU, PAGE_VIDEO, PAGE_FUJINET };
 
 typedef struct {
     GtkWindow *win;
@@ -43,11 +50,109 @@ typedef struct {
     GtkWidget *palette_pic;
     GtkLabel *vid_text;
 
+    GtkNotebook *notebook;
+    GtkLabel *fuji_note;
+    GtkTextView *fuji_text;
+    GtkLabel *fuji_state;
+    int fuji_count;
+    uint64_t fuji_last;
+    int fuji_ticks;
+
     uint16_t mem_addr;
     uint32_t scratch[ASTROVID_MAX_PIXELS];  /* MAX of every Video render */
 } DbgWindow;
 
 static DbgWindow *g_dbg;
+
+/* ---- log views ---- */
+
+/* Engine text for a text buffer: valid UTF-8, control bytes dropped. */
+static char *clean_text(const char *text)
+{
+    char *v = g_utf8_make_valid(text, -1), *s, *o;
+    for (s = o = v; *s; s++)
+        if ((unsigned char)*s >= 0x20 || *s == '\n' || *s == '\t') *o++ = *s;
+    *o = '\0';
+    return v;
+}
+
+static GtkAdjustment *vadj(GtkTextView *view)
+{
+    GtkWidget *parent = gtk_widget_get_parent(GTK_WIDGET(view));
+    return GTK_IS_SCROLLED_WINDOW(parent)
+        ? gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(parent)) : NULL;
+}
+
+static gboolean at_end(GtkAdjustment *adj)
+{
+    return gtk_adjustment_get_value(adj) + gtk_adjustment_get_page_size(adj) >=
+           gtk_adjustment_get_upper(adj) - 2.0;
+}
+
+/* A log follows its end while its reader is there. New text grows the view
+ * only once it is laid out (or its tab first shows), so the end is pinned
+ * whenever the view's height changes; whether to follow is decided as text
+ * arrives. */
+static gboolean following(GtkTextView *view)
+{
+    return GPOINTER_TO_INT(g_object_get_data(G_OBJECT(view), "follow")) != 0;
+}
+
+static void on_log_resized(GtkAdjustment *adj, gpointer view)
+{
+    if (following(view))
+        gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj) -
+                                      gtk_adjustment_get_page_size(adj));
+}
+
+static void make_log(GtkTextView *view)
+{
+    g_object_set_data(G_OBJECT(view), "follow", GINT_TO_POINTER(1));
+    g_signal_connect(vadj(view), "changed", G_CALLBACK(on_log_resized), view);
+}
+
+/* Before new text: follow if the reader is at the end (or never looked). */
+static void log_note_reader(GtkTextView *view)
+{
+    GtkAdjustment *adj = vadj(view);
+    g_object_set_data(G_OBJECT(view), "follow", GINT_TO_POINTER(
+        gtk_adjustment_get_page_size(adj) <= 0.0 || at_end(adj)));
+}
+
+static void log_to_end(GtkTextView *view)
+{
+    g_object_set_data(G_OBJECT(view), "follow", GINT_TO_POINTER(1));
+    on_log_resized(vadj(view), view);
+}
+
+/* Replaces a view's text where the reader left it (a refresh must not throw
+ * a scrolled view back to its top), or, following, at its end. */
+static void set_text_at(GtkTextView *view, const char *text, gboolean follow)
+{
+    GtkTextBuffer *b = gtk_text_view_get_buffer(view);
+    GtkAdjustment *adj = vadj(view);
+    char *clean = clean_text(text);
+    GtkTextMark *mark;
+    GtkTextIter it;
+    int top = 0;
+
+    if (!follow && adj && gtk_adjustment_get_value(adj) > 0.0) {
+        gtk_text_view_get_line_at_y(view, &it, (int)gtk_adjustment_get_value(adj), NULL);
+        top = gtk_text_iter_get_line(&it);
+    }
+    gtk_text_buffer_set_text(b, clean, -1);
+    g_free(clean);
+    if (follow) {
+        log_to_end(view);
+        return;
+    }
+    if (top <= 0) return;
+    /* scroll_to_mark waits for the new text's layout */
+    gtk_text_buffer_get_iter_at_line(b, &it, top);
+    mark = gtk_text_buffer_create_mark(b, NULL, &it, TRUE);
+    gtk_text_view_scroll_to_mark(view, mark, 0.0, TRUE, 0.0, 0.0);
+    gtk_text_buffer_delete_mark(b, mark);
+}
 
 /* ---- CPU tab refresh ---- */
 
@@ -156,12 +261,57 @@ static void refresh_video(DbgWindow *d)
     gtk_label_set_text(d->vid_text, text);
 }
 
+/* ---- FujiNet tab refresh ---- */
+
+static void refresh_fujinet(DbgWindow *d, gboolean force)
+{
+    static astrodebug_fuji_packet p[TRACE_MAX];
+    char state[2048];
+    int n = astrodebug_fujinet_trace(d->dbg, p, TRACE_MAX);
+
+    if (astrosession_fujinet_link(d->session))
+        gtk_label_set_text(d->fuji_note, "FujiNet cartridge, connected.");
+    else if (astrosession_fujinet_running(d->session))
+        gtk_label_set_text(d->fuji_note, "FujiNet cartridge, not connected.");
+    else
+        gtk_label_set_text(d->fuji_note,
+                           "FujiNet cartridge, not connected (the FujiNet runtime is not running).");
+    astrodebug_fujinet_state(d->dbg, state, sizeof state);
+    gtk_label_set_text(d->fuji_state, state);
+
+    if (!force && n == d->fuji_count && (n == 0 || p[n - 1].serial == d->fuji_last))
+        return;
+    d->fuji_count = n;
+    d->fuji_last = n > 0 ? p[n - 1].serial : 0;
+    log_note_reader(d->fuji_text);
+    GString *t = g_string_new(NULL);
+    for (int i = 0; i < n; i++) {
+        g_string_append_printf(t, "%s%s", i ? "\n" : "", p[i].text);
+        if (p[i].repeat > 1)
+            g_string_append_printf(t, " \xc3\x97%u", p[i].repeat);
+        g_string_append(t, "\n     ");
+        for (int k = 0; k < p[i].nbytes && k < (int)sizeof p[i].data; k++)
+            g_string_append_printf(t, "%02X ", p[i].data[k]);
+        if (p[i].nbytes > (int)sizeof p[i].data) g_string_append(t, "\xe2\x80\xa6");
+    }
+    if (n == 0)
+        g_string_append(t, "(no FujiBus packets since the trace was cleared)");
+    set_text_at(d->fuji_text, t->str, force || following(d->fuji_text));
+    g_string_free(t, TRUE);
+}
+
 static gboolean poll_tick(gpointer user_data)
 {
     DbgWindow *d = user_data;
     /* the Video tab is live even while running; the CPU tab needs a pause */
     refresh_video(d);
     uint64_t s = astrodebug_stop_serial(d->dbg);
+    /* FujiNet: on a stop, and twice a second while running */
+    if (gtk_notebook_get_current_page(d->notebook) == PAGE_FUJINET &&
+        (s != d->last_serial || (!astrodebug_is_paused(d->dbg) && ++d->fuji_ticks >= 5))) {
+        d->fuji_ticks = 0;
+        refresh_fujinet(d, FALSE);
+    }
     if (s != d->last_serial || !astrodebug_is_paused(d->dbg)) {
         d->last_serial = s;
         refresh_cpu(d);
@@ -189,6 +339,21 @@ static void on_mem_addr(GtkEntry *e, gpointer u)
     const char *t = gtk_editable_get_text(GTK_EDITABLE(e));
     d->mem_addr = (uint16_t)strtol(t, NULL, 16);
     refresh_cpu(d);
+}
+
+static void on_fuji_clear(GtkButton *b, gpointer u)
+{
+    DbgWindow *d = u;
+    (void)b;
+    astrodebug_fujinet_trace_clear(d->dbg);
+    refresh_fujinet(d, TRUE);
+}
+
+static void on_switch_page(GtkNotebook *nb, GtkWidget *page, guint num, gpointer u)
+{
+    (void)nb; (void)page;
+    if (num == PAGE_FUJINET)
+        refresh_fujinet(u, FALSE);
 }
 
 static void on_bp_addr(GtkEntry *e, gpointer u)
@@ -293,6 +458,63 @@ static GtkWidget *build_video_tab(DbgWindow *d)
     return scroll;
 }
 
+static GtkWidget *heading(const char *text)
+{
+    GtkWidget *l = gtk_label_new(text);
+    gtk_widget_add_css_class(l, "heading");
+    gtk_label_set_xalign(GTK_LABEL(l), 0.0f);
+    return l;
+}
+
+static GtkWidget *build_fujinet_tab(DbgWindow *d)
+{
+    GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *clear = gtk_button_new_with_label("Clear");
+    gtk_widget_set_margin_top(paned, 8); gtk_widget_set_margin_bottom(paned, 8);
+    gtk_widget_set_margin_start(paned, 8); gtk_widget_set_margin_end(paned, 8);
+
+    d->fuji_note = GTK_LABEL(gtk_label_new(""));
+    gtk_widget_add_css_class(GTK_WIDGET(d->fuji_note), "dim-label");
+    gtk_label_set_wrap(d->fuji_note, TRUE);
+    gtk_label_set_xalign(d->fuji_note, 0.0f);
+    gtk_widget_set_hexpand(GTK_WIDGET(d->fuji_note), TRUE);
+    g_signal_connect(clear, "clicked", G_CALLBACK(on_fuji_clear), d);
+    gtk_box_append(GTK_BOX(row), GTK_WIDGET(d->fuji_note));
+    gtk_box_append(GTK_BOX(row), clear);
+    gtk_box_append(GTK_BOX(left), heading("FujiBus packets (SLIP-decoded)"));
+    gtk_box_append(GTK_BOX(left), row);
+
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *view = gtk_text_view_new();
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 6);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), view);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_hexpand(scroll, TRUE);
+    gtk_box_append(GTK_BOX(left), scroll);
+    d->fuji_text = GTK_TEXT_VIEW(view);
+    make_log(d->fuji_text);
+
+    gtk_widget_set_margin_start(right, 10);
+    gtk_box_append(GTK_BOX(right), heading("FujiNet cartridge"));
+    gtk_box_append(GTK_BOX(right), labeled_mono(&d->fuji_state));
+
+    gtk_paned_set_start_child(GTK_PANED(paned), left);
+    gtk_paned_set_end_child(GTK_PANED(paned), right);
+    gtk_paned_set_shrink_start_child(GTK_PANED(paned), FALSE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(paned), FALSE);
+    gtk_paned_set_resize_end_child(GTK_PANED(paned), FALSE);
+    gtk_widget_set_size_request(left, 520, -1);
+    gtk_widget_set_size_request(right, 300, -1);
+    d->fuji_count = -1;
+    return paned;
+}
+
 static void install_css(void)
 {
     static gboolean done;
@@ -336,10 +558,19 @@ void astro_debugger_show(GtkWindow *parent, astrosession *session)
     gtk_window_set_transient_for(d->win, parent);
 
     GtkWidget *nb = gtk_notebook_new();
+    d->notebook = GTK_NOTEBOOK(nb);
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_cpu_tab(d),
                              gtk_label_new("Z80"));
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_video_tab(d),
                              gtk_label_new("Video chip"));
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_fujinet_tab(d),
+                             gtk_label_new("FujiNet"));
+    g_signal_connect(nb, "switch-page", G_CALLBACK(on_switch_page), d);
+    /* ASTRO_DEBUGGER_TAB: a page number to open on (0 Z80, 1 Video chip,
+     * 2 FujiNet) */
+    const char *tab = g_getenv("ASTRO_DEBUGGER_TAB");
+    if (tab && *tab)
+        gtk_notebook_set_current_page(GTK_NOTEBOOK(nb), atoi(tab));
     gtk_window_set_child(d->win, nb);
 
     g_signal_connect(d->win, "close-request", G_CALLBACK(on_close), d);

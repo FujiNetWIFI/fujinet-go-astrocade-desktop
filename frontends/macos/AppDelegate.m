@@ -169,7 +169,7 @@
     }
 }
 
-- (void)showDebugger:(id)sender { (void)sender; [DebuggerWindow showDebugger]; }
+- (void)showDebugger:(id)sender { (void)sender; [DebuggerWindow showDebuggerForSession:_session]; }
 - (void)resetGame:(id)sender { (void)sender; astrosession_reset_game(_session); }
 - (void)resetConfig:(id)sender { (void)sender; astrosession_reset_to_config(_session); }
 

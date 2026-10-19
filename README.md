@@ -26,9 +26,10 @@ milestone-by-milestone log.
   live TNFS host.
 - **Frontends** — GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), Windows (Win32/
   GDI) and macOS (AppKit), each with the emulator display, the 24-key keypad
-  window (gold column, RESET / RESET TO CONFIG), a two-tab debugger exposing
-  every Z80 and video-chip register, gamepad hand controllers, ROM import, and
-  a FujiNet console-log viewer. Config pages open in the system browser.
+  window (gold column, RESET / RESET TO CONFIG), a debugger exposing every Z80
+  and video-chip register and every FujiBus packet the cart exchanges with
+  FujiNet, gamepad hand controllers, ROM import, and a FujiNet console-log
+  viewer. Config pages open in the system browser.
 - **Packaging** — per-frontend DEB/RPM/TGZ, two Flatpaks, a Windows NSIS
   installer, and a signed macOS bundle, all wired through GitHub Actions.
 

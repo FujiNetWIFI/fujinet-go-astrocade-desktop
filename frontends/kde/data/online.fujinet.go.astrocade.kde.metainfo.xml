@@ -30,6 +30,14 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-10-19">
+      <description>
+        <p>
+          Debugger: a FujiNet tab shows every FujiBus packet between the
+          Astrocade and FujiNet, both ways, with hex.
+        </p>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-09-25">
       <description>
         <p>

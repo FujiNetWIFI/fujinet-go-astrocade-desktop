@@ -266,7 +266,7 @@ static void do_command(int id)
         }
         break;
     case IDM_KEYPAD:        toggle_keypad(); break;
-    case IDM_DEBUGGER:      astro_debugger_show(g_hwnd); break;
+    case IDM_DEBUGGER:      astro_debugger_show(g_hwnd, g_session); break;
     case IDM_RESET_GAME:    astrosession_reset_game(g_session); break;
     case IDM_RESET_CONFIG:  astrosession_reset_to_config(g_session); break;
     case IDM_FUJINET_CONFIG:
@@ -327,7 +327,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
         return 0;
     case WM_KEYDOWN:
         if (w == VK_F9) { toggle_keypad(); return 0; }
-        if (w == VK_F12) { astro_debugger_show(g_hwnd); return 0; }
+        if (w == VK_F12) { astro_debugger_show(g_hwnd, g_session); return 0; }
         if (!(l & 0x40000000))   /* ignore auto-repeat */
             forward_key(astro_keysym_from_vk(w), 1);
         return 0;
@@ -398,7 +398,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     /* developer affordances, matching the GNOME/KDE ports */
     if (getenv("ASTRO_OPEN_DEBUGGER"))
-        astro_debugger_show(g_hwnd);
+        astro_debugger_show(g_hwnd, g_session);
     if (getenv("ASTRO_OPEN_KEYPAD"))
         toggle_keypad();
 

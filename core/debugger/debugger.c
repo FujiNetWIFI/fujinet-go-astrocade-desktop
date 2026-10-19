@@ -5,15 +5,20 @@
  * decision-making runs on the emulator thread inside hook_cb; the UI thread
  * only sets requests (pause/resume/step) and, while paused, reads state.
  *
+ * The FujiNet trace is separate: the cart's tap feeds it on the emulator
+ * thread from session start, under its own lock, engaged or not.
+ *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include <pthread.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "astro_internal.h"
 #include "astrodebug.h"
+#include "fujitrace.h"
 #include "host.h"
 
 /* the chips disassembler's implementation lives in this one TU */
@@ -43,6 +48,9 @@ struct astrodebug {
     pthread_mutex_t mtx;
     pthread_cond_t cond;    /* the parked emulator thread waits on this */
     astro_machine_t *m;     /* set on the first hook call */
+
+    pthread_mutex_t trace_mtx;
+    fujitrace fuji;
 };
 
 static struct astrodebug s_dbg;
@@ -93,6 +101,7 @@ astrodebug *astrodebug_get(void)
     if (!inited) {
         pthread_mutex_init(&s_dbg.mtx, NULL);
         pthread_cond_init(&s_dbg.cond, NULL);
+        pthread_mutex_init(&s_dbg.trace_mtx, NULL);
         inited = 1;
     }
     return &s_dbg;
@@ -319,4 +328,47 @@ int astrodebug_breakpoint_list(astrodebug *d, uint16_t *out, int max)
         out[j + 1] = v;
     }
     return n;
+}
+
+/* ---- the FujiNet trace ---- */
+
+/* The cart's tap: the emulator thread, any time. */
+static void fuji_tap(int dir, const uint8_t *buf, size_t len)
+{
+    struct astrodebug *d = &s_dbg;
+
+    pthread_mutex_lock(&d->trace_mtx);
+    fujitrace_feed(&d->fuji, dir, buf, len);
+    pthread_mutex_unlock(&d->trace_mtx);
+}
+
+void astrodebug_fujinet_install(astrodebug *d)
+{
+    (void)d;
+    astro_cart_set_trace(fuji_tap);
+}
+
+int astrodebug_fujinet_trace(astrodebug *d, astrodebug_fuji_packet *out, int max)
+{
+    pthread_mutex_lock(&d->trace_mtx);
+    int n = fujitrace_copy(&d->fuji, out, max);
+    pthread_mutex_unlock(&d->trace_mtx);
+    return n;
+}
+
+void astrodebug_fujinet_trace_clear(astrodebug *d)
+{
+    pthread_mutex_lock(&d->trace_mtx);
+    fujitrace_clear(&d->fuji);
+    pthread_mutex_unlock(&d->trace_mtx);
+}
+
+int astrodebug_fujinet_state(astrodebug *d, char *dst, int dstsz)
+{
+    (void)d;
+    if (dstsz <= 0)
+        return 0;
+    if (!astro_host_is_running())
+        return snprintf(dst, (size_t)dstsz, "The Astrocade is off\n");
+    return astro_cart_describe(&astro_host_machine()->cart, dst, dstsz);
 }

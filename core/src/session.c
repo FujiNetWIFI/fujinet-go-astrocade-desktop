@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "astro_internal.h"
+#include "astrodebug.h"
 #include "bindings.h"
 #include "gamepad_sdl.h"
 #include "host.h"
@@ -164,6 +165,10 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
      * non-fatal: the mailbox runs link-down and the CONFIG client says so. */
     if (fujinet_start(s) == 0)
         fujinet_wait_for_boip(s, 3000);
+
+    /* The debugger's FujiNet trace is always on: it is cheap, and it is most
+     * useful about what happened before anyone thought to look. */
+    astrodebug_fujinet_install(astrodebug_get());
 
     astro_host_opts_t hopts = {
         .bios = s->bios,

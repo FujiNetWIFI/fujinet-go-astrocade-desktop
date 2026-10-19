@@ -8,6 +8,8 @@
 
 #include <windows.h>
 
-void astro_debugger_show(HWND parent);
+#include "astrosession.h"
+
+void astro_debugger_show(HWND parent, astrosession *session);
 
 #endif

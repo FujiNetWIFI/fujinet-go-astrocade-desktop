@@ -143,6 +143,11 @@ const char *astrosession_fujinet_webui_url(astrosession *s);
  * Returns bytes written; 0 when the runtime is not loaded. */
 int astrosession_fujinet_copy_log(astrosession *s, char *dst, int max);
 
+/* 1 when this app's FujiNet runtime is up. */
+int astrosession_fujinet_running(const astrosession *s);
+/* 1 when the FujiNet cartridge's BoIP link is connected. */
+int astrosession_fujinet_link(const astrosession *s);
+
 /* RESET TO CONFIG: clear the persisted cartridge and restart, booting the
  * FujiNet cart's baked CONFIG client -- the only way back to CONFIG once a
  * booted image has taken over the mailbox for the session. 0 / -1+error. */

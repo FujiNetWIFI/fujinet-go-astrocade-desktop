@@ -2,7 +2,8 @@
  * debug_test -- the debugger engine against the running machine: pause,
  * read registers, single-step (PC advances), disassemble, a breakpoint that
  * fires, and the peek path leaving the cart mailbox undisturbed. Also pulls a
- * video-chip snapshot and confirms the BIOS-programmed registers are exposed.
+ * video-chip snapshot and confirms the BIOS-programmed registers are exposed,
+ * and reads the FujiNet pane with no FujiNet listening.
  *
  * Needs a BIOS (exits 77 / ctest SKIP otherwise).
  *
@@ -47,6 +48,7 @@ int main(int argc, char **argv)
     astro_host_opts_t opts = { .bios = bios, .cart = NULL, .cart_size = 0,
                                .exp = ASTRO_EXP_NONE,
                                .boip_hostport = "127.0.0.1:1" };
+    astrodebug_fujinet_install(astrodebug_get());
     if (astro_host_start(&opts) != 0) { fprintf(stderr, "start failed\n"); return 1; }
 
     /* let it boot a moment so the BIOS has programmed the video registers */
@@ -128,8 +130,18 @@ int main(int argc, char **argv)
     CHECK(strstr(text, "MAGIC") != NULL, "state text mentions the magic register");
     CHECK(strstr(text, "INLIN") != NULL, "state text lists INLIN");
 
+    /* FujiNet: no listener, so no link, nothing sent, nothing traced */
+    static astrodebug_fuji_packet pk[8];
+    char state[1024];
+    CHECK(astrodebug_fujinet_trace(d, pk, 8) == 0, "no FujiBus packets without a link");
+    astrodebug_fujinet_state(d, state, sizeof state);
+    CHECK(strstr(state, "BoIP link     not connected") != NULL, "state shows the link down");
+    CHECK(strstr(state, "Mailbox       live") != NULL, "CONFIG claims the mailbox");
+
     astrodebug_set_engaged(d, 0);
     astro_host_stop();
+    astrodebug_fujinet_state(d, state, sizeof state);
+    CHECK(strcmp(state, "The Astrocade is off\n") == 0, "state once stopped");
 
     fprintf(stderr, "debug_test: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
