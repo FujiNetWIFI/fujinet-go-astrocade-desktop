@@ -145,8 +145,15 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
         opts = &local;
     }
 
+    /* the selected BIOS, or else whichever one is imported */
+    const int bios = astrosession_resolve_bios(s, opts->bios);
     free(s->bios);
-    s->bios = roms_load_bios(s, opts->bios);
+    s->bios = NULL;
+    if (bios < 0) {
+        session_set_error(s, "No Astrocade BIOS yet: use Machine > Import BIOS");
+        return -1;
+    }
+    s->bios = roms_load_bios(s, bios);
     if (!s->bios)
         return -1;      /* error already set */
 

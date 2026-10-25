@@ -24,6 +24,7 @@ struct _AstroWindow {
 
     astrosession *session;
     AstroDisplay *display;
+    GtkStack *stack;          /* the picture, or the No-BIOS page */
     AdwToastOverlay *toasts;
     /* GTK4's key-pressed carries no repeat flag; tracked by hand so holding a
      * sysaction key (Backspace) fires Reset Game once, not ~60x/sec. Cleared
@@ -40,6 +41,20 @@ void astro_window_toast(AstroWindow *self, const char *message)
     adw_toast_overlay_add_toast(self->toasts, adw_toast_new(message));
 }
 
+static void show_message(GtkWidget *over, const char *heading, const char *body)
+{
+    AdwDialog *dlg = adw_alert_dialog_new(heading, body);
+    adw_alert_dialog_add_response(ADW_ALERT_DIALOG(dlg), "ok", "OK");
+    adw_dialog_present(dlg, over);
+}
+
+/* The picture while there is a BIOS to boot, else the No-BIOS page. */
+void astro_window_show_page(AstroWindow *self)
+{
+    gtk_stack_set_visible_child_name(self->stack,
+        astrosession_has_system_roms(self->session) ? "display" : "nobios");
+}
+
 void astro_window_restart_session(AstroWindow *self)
 {
     astrosession_start_opts opts;
@@ -47,6 +62,16 @@ void astro_window_restart_session(AstroWindow *self)
     astrosession_default_opts(self->session, &opts);
     if (astrosession_start(self->session, &opts) != 0)
         astro_window_toast(self, astrosession_last_error(self->session));
+    astro_window_show_page(self);
+}
+
+/* Starts the machine once a BIOS is there to boot (after an import). */
+void astro_window_start(AstroWindow *self)
+{
+    astro_window_show_page(self);
+    if (!astrosession_is_running(self->session) &&
+        astrosession_has_system_roms(self->session))
+        astro_window_restart_session(self);
 }
 
 /* ---- keyboard capture ---------------------------------------------------
@@ -182,37 +207,128 @@ static void action_reset_game(GSimpleAction *a, GVariant *p, gpointer user_data)
     astro_window_toast(self, "Reset Game");
 }
 
-static void on_rom_chosen(GObject *source, GAsyncResult *res, gpointer user_data)
+/* ---- the BIOS ---------------------------------------------------------- */
+
+static const char *const ROM_EXTS[] = { "bin", "rom", "zip", NULL };
+
+GtkFileDialog *astro_file_dialog(const char *title, const char *filter_name,
+                                 const char *const *exts)
 {
-    AstroWindow *self = ASTRO_WINDOW(user_data);
-    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
-    GFile *file = gtk_file_dialog_open_finish(dialog, res, NULL);
-    if (!file)
-        return;
-    char *path = g_file_get_path(file);
-    char name[64];
-    if (path && astrosession_import_rom(self->session, path, name, sizeof name) == 0) {
-        char msg[128];
-        g_snprintf(msg, sizeof msg, "Imported %s", name);
-        astro_window_toast(self, msg);
-        /* if nothing was running (no BIOS before), start now */
-        if (!astrosession_is_running(self->session))
-            astro_window_restart_session(self);
-    } else {
-        astro_window_toast(self, astrosession_last_error(self->session));
-    }
-    g_free(path);
-    g_object_unref(file);
+    GtkFileDialog *dlg = gtk_file_dialog_new();
+    GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    GtkFileFilter *these = gtk_file_filter_new();
+    GtkFileFilter *all = gtk_file_filter_new();
+
+    gtk_file_filter_set_name(these, filter_name);
+    for (int i = 0; exts && exts[i]; i++)
+        gtk_file_filter_add_suffix(these, exts[i]);   /* any case */
+    gtk_file_filter_set_name(all, "All files");
+    gtk_file_filter_add_pattern(all, "*");
+    g_list_store_append(filters, these);
+    g_list_store_append(filters, all);
+    gtk_file_dialog_set_title(dlg, title);
+    gtk_file_dialog_set_filters(dlg, G_LIST_MODEL(filters));
+    g_object_unref(these);
+    g_object_unref(all);
+    g_object_unref(filters);
+    return dlg;
 }
 
-static void action_import_rom(GSimpleAction *a, GVariant *p, gpointer user_data)
+/* Each chosen file (or the folder) through the import, then one message
+ * saying what came of it all, and the machine starts if it now can. */
+static void on_bios_chosen(GObject *src, GAsyncResult *res, gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
+    const gboolean folder = GPOINTER_TO_INT(g_object_get_data(src, "astro-folder"));
+    g_autoptr(GListModel) files = NULL;
+    g_autoptr(GFile) dir = NULL;
+    GString *log = g_string_new(NULL);
+    int imported = 0;
+
+    if (folder)
+        dir = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, NULL);
+    else
+        files = gtk_file_dialog_open_multiple_finish(GTK_FILE_DIALOG(src), res, NULL);
+    for (guint i = 0; ; i++) {
+        g_autoptr(GFile) f = NULL;
+        if (folder) {
+            if (i > 0 || !dir)
+                break;
+            f = g_object_ref(dir);
+        } else {
+            if (!files || i >= g_list_model_get_n_items(files))
+                break;
+            f = g_list_model_get_item(files, i);
+        }
+        g_autofree char *path = g_file_get_path(f);
+        char msg[1024];
+        if (!path)
+            continue;
+        if (astrosession_rom_import(self->session, path, msg, sizeof msg) == 0)
+            imported++;
+        g_string_append_printf(log, "%s%s", log->len ? "\n" : "", msg);
+    }
+    if (log->len)
+        show_message(GTK_WIDGET(self), imported ? "BIOS Imported" : "Nothing Imported", log->str);
+    g_string_free(log, TRUE);
+    astro_window_start(self);
+}
+
+static void import_bios(AstroWindow *self, gboolean folder)
+{
+    GtkFileDialog *dlg = astro_file_dialog(folder ? "Import BIOS from a Folder" : "Import BIOS",
+                                           "BIOS images and ROM sets", ROM_EXTS);
+    g_object_set_data(G_OBJECT(dlg), "astro-folder", GINT_TO_POINTER(folder));
+    if (folder)
+        gtk_file_dialog_select_folder(dlg, GTK_WINDOW(self), NULL, on_bios_chosen, self);
+    else
+        gtk_file_dialog_open_multiple(dlg, GTK_WINDOW(self), NULL, on_bios_chosen, self);
+    g_object_unref(dlg);
+}
+
+static void action_import_bios(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
     (void)a; (void)p;
-    GtkFileDialog *dialog = gtk_file_dialog_new();
-    gtk_file_dialog_set_title(dialog, "Import System ROM (astro.bin)");
-    gtk_file_dialog_open(dialog, GTK_WINDOW(self), NULL, on_rom_chosen, self);
-    g_object_unref(dialog);
+    import_bios(ASTRO_WINDOW(user_data), FALSE);
+}
+
+static void action_import_bios_folder(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
+    (void)a; (void)p;
+    import_bios(ASTRO_WINDOW(user_data), TRUE);
+}
+
+static void on_nobios_import(GtkButton *b, gpointer user_data)
+{
+    import_bios(ASTRO_WINDOW(user_data),
+                GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "astro-folder")));
+}
+
+/* In place of the picture until a BIOS is imported. */
+static GtkWidget *nobios_page(AstroWindow *self)
+{
+    GtkWidget *page = adw_status_page_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *files = gtk_button_new_with_label("Import BIOS\xe2\x80\xa6");
+    GtkWidget *folder = gtk_button_new_with_label("Import a Folder\xe2\x80\xa6");
+
+    adw_status_page_set_icon_name(ADW_STATUS_PAGE(page), astro_icon_name());
+    adw_status_page_set_title(ADW_STATUS_PAGE(page), "No Astrocade BIOS");
+    adw_status_page_set_description(ADW_STATUS_PAGE(page),
+        "Bally's BIOS ROM is not part of the app. Import the one you have "
+        "\xe2\x80\x94 astro.bin, ballyhlc.bin or bioswhit.bin, a zip such as "
+        "MAME's astrocde set, or a folder \xe2\x80\x94 and the Astrocade starts.");
+    gtk_widget_add_css_class(files, "pill");
+    gtk_widget_add_css_class(files, "suggested-action");
+    gtk_widget_add_css_class(folder, "pill");
+    g_object_set_data(G_OBJECT(folder), "astro-folder", GINT_TO_POINTER(1));
+    g_signal_connect(files, "clicked", G_CALLBACK(on_nobios_import), self);
+    g_signal_connect(folder, "clicked", G_CALLBACK(on_nobios_import), self);
+    gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(box), files);
+    gtk_box_append(GTK_BOX(box), folder);
+    adw_status_page_set_child(ADW_STATUS_PAGE(page), box);
+    return page;
 }
 
 static void on_cart_chosen(GObject *source, GAsyncResult *res, gpointer user_data)
@@ -326,7 +442,8 @@ static const GActionEntry win_actions[] = {
     {.name = "keypad", .activate = action_keypad},
     {.name = "reset-game", .activate = action_reset_game},
     {.name = "reset-config", .activate = action_reset_config},
-    {.name = "import-rom", .activate = action_import_rom},
+    {.name = "import-bios", .activate = action_import_bios},
+    {.name = "import-bios-folder", .activate = action_import_bios_folder},
     {.name = "open-cart", .activate = action_open_cart},
     {.name = "fujinet-config", .activate = action_fujinet_config},
     {.name = "fujinet-log", .activate = action_fujinet_log},
@@ -364,7 +481,8 @@ static GMenu *build_menu(void)
     GMenu *tail = g_menu_new();
 
     g_menu_append(machine, "Open Cartridge…", "win.open-cart");
-    g_menu_append(machine, "Import System ROM…", "win.import-rom");
+    g_menu_append(machine, "Import BIOS…", "win.import-bios");
+    g_menu_append(machine, "Import BIOS from a Folder…", "win.import-bios-folder");
     g_menu_append_section(menu, "Machine", G_MENU_MODEL(machine));
 
     g_menu_append(view, "Keypad (F9)", "win.keypad");
@@ -428,8 +546,11 @@ GtkWidget *astro_window_new(AdwApplication *app, astrosession *session)
     adw_header_bar_pack_end(header, GTK_WIDGET(menu_button));
 
     self->display = ASTRO_DISPLAY(astro_display_new(session));
+    self->stack = GTK_STACK(gtk_stack_new());
+    gtk_stack_add_named(self->stack, GTK_WIDGET(self->display), "display");
+    gtk_stack_add_named(self->stack, nobios_page(self), "nobios");
     self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    adw_toast_overlay_set_child(self->toasts, GTK_WIDGET(self->display));
+    adw_toast_overlay_set_child(self->toasts, GTK_WIDGET(self->stack));
 
     view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
     adw_toolbar_view_add_top_bar(view, GTK_WIDGET(header));
@@ -457,9 +578,9 @@ GtkWidget *astro_window_new(AdwApplication *app, astrosession *session)
         astro_keypad_window_toggle(GTK_WINDOW(self), session);
     if (getenv("ASTRO_OPEN_DEBUGGER"))
         astro_debugger_show(GTK_WINDOW(self), session);
+    if (getenv("ASTRO_OPEN_PREFS"))
+        astro_prefs_show(self, session);
 
-    if (!astrosession_has_system_roms(session))
-        astro_window_toast(self,
-            "No system ROM found — use Machine ▸ Import System ROM…");
+    astro_window_show_page(self);
     return GTK_WIDGET(self);
 }

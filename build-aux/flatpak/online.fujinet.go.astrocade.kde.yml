@@ -86,7 +86,7 @@ modules:
       # The Bally system ROMs are copyrighted firmware with no
       # redistributable substitute -- see COMPLIANCE.md. Every published
       # artifact, this flatpak included, embeds none and leaves it to the
-      # app's own "Import System ROM" path.
+      # app's own "Import BIOS" path.
       - -DWITH_ASTROCADE_ROMS=OFF
     sources:
       - type: dir

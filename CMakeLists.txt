@@ -15,7 +15,7 @@ endif()
 # and the release workflow all take it from PROJECT_VERSION, and cutting a
 # tag checks that the tag agrees with it (see "Cutting a release" in the
 # README).
-project(fujinet-go-astrocade-desktop VERSION 0.3.0 LANGUAGES C)
+project(fujinet-go-astrocade-desktop VERSION 0.4.0 LANGUAGES C)
 
 add_compile_definitions(ASTRO_VERSION_STRING="${PROJECT_VERSION}")
 
@@ -40,7 +40,7 @@ set(FRONTEND "all" CACHE STRING
 #                    cartridge, the FujiNet CONFIG client). NOT for
 #                    redistribution.
 #   OFF           -- the app reads them from the user's ROM directory at run
-#                    time via the "Import System ROMs..." path. Every
+#                    time via the "Import BIOS..." path. Every
 #                    artifact this repository publishes is built this way,
 #                    and core/tests/no_embedded_roms.py checks that claim
 #                    against the shipped binaries.

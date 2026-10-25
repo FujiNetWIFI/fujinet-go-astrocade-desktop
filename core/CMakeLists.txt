@@ -68,7 +68,8 @@ if(NOT WIN32)
 endif()
 target_link_libraries(astro_core PUBLIC Threads::Threads)
 if(WIN32)
-  target_link_libraries(astro_core PUBLIC ws2_32)
+  # winmm: timeBeginPeriod, host.c's pacing fallback before Windows 10 1803
+  target_link_libraries(astro_core PUBLIC ws2_32 winmm)
 else()
   target_link_libraries(astro_core PUBLIC m)
 endif()
@@ -150,6 +151,7 @@ add_library(astro_session STATIC
   src/settings.c
   src/paths.c
   src/roms.c
+  src/zipread.c
   src/session.c
   src/bindings.c
   src/astro_keymap.c
@@ -161,6 +163,14 @@ add_library(astro_session STATIC
 set_target_properties(astro_session PROPERTIES C_STANDARD 11)
 target_include_directories(astro_session PRIVATE src)
 target_link_libraries(astro_session PUBLIC astro_core PRIVATE SDL3::SDL3)
+# zlib inflates the deflated entries of a BIOS zip (MAME's astrocde set). The
+# Windows exe stays one folder of system DLLs plus SDL3.dll (the release
+# workflow checks its import table), so it takes zlib's static archive.
+if(WIN32)
+  set(ZLIB_USE_STATIC_LIBS ON)
+endif()
+find_package(ZLIB REQUIRED)
+target_link_libraries(astro_session PRIVATE ZLIB::ZLIB)
 # fujinet_runtime.c dlopen's libfujinet at run time (no link-time dependency,
 # so a -DWITH_FUJINET=OFF build still links). These tell paths_provision_
 # fujinet where to find the runtime and its asset tree.
@@ -232,3 +242,9 @@ target_link_libraries(session_test astro_session)
 add_test(NAME session_test
          COMMAND session_test "${ASTRO_ROM_DIR_SRC}/astro.bin")
 set_tests_properties(session_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# BIOS import from files, zips and folders, on forged images (no Bally ROM
+# needed): each carries a real BIOS's size and CRC32.
+add_executable(rom_import_test tests/rom_import_test.c)
+target_link_libraries(rom_import_test astro_session ZLIB::ZLIB)
+add_test(NAME rom_import_test COMMAND rom_import_test)

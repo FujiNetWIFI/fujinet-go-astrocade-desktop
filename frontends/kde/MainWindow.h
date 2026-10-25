@@ -15,6 +15,7 @@ extern "C" {
 class DisplayWidget;
 class KeypadWindow;
 class DebuggerWindow;
+class QStackedWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -29,10 +30,19 @@ private:
     void buildMenus();
     void forwardKey(int keysym, bool down);
     void restartSession();
+    void start();
+    void showPage();
+    void importBios(bool folder);
+    QWidget *buildNoBiosPage();
+    void toggleKeypad();
+    void showDebugger();
+    void showSettings();
     void showToast(const QString &msg);
     void showFujinetLog();
 
     astrosession *m_session;
+    QStackedWidget *m_stack = nullptr;
+    QWidget *m_noBios = nullptr;
     DisplayWidget *m_display = nullptr;
     KeypadWindow *m_keypad = nullptr;
     DebuggerWindow *m_debugger = nullptr;

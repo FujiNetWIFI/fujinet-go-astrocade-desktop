@@ -68,8 +68,8 @@ int main(int argc, char **argv)
      * -- not just argc -- decides whether a real BIOS is actually there. */
     int have_bios = argc > 1 && access(argv[1], F_OK) == 0;
     if (have_bios) {
-        char name[64];
-        int rc = astrosession_import_rom(s, argv[1], name, sizeof name);
+        char msg[256];
+        int rc = astrosession_rom_import(s, argv[1], msg, sizeof msg);
         CHECK(rc == 0, "import real BIOS");
         CHECK(astrosession_has_system_roms(s), "has_system_roms after import");
 
@@ -78,7 +78,7 @@ int main(int argc, char **argv)
         snprintf(bogus, sizeof bogus, "%s/bogus.bin", dir);
         FILE *f = fopen(bogus, "wb");
         if (f) { fputc(0x55, f); fclose(f); }
-        CHECK(astrosession_import_rom(s, bogus, NULL, 0) != 0,
+        CHECK(astrosession_rom_import(s, bogus, msg, sizeof msg) != 0,
               "reject non-BIOS file");
 
         /* with a BIOS present, a start/stop cycle should run and paint.

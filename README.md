@@ -55,6 +55,14 @@ For local development, put `astro.bin` (and optionally the `ballyhlc.bin` /
 `-DWITH_ASTROCADE_ROMS=OFF` and import the BIOS from the user's ROM directory
 at run time. See `COMPLIANCE.md`.
 
+Until a BIOS is imported, the window shows a **No Astrocade BIOS** page.
+**Import BIOS…** (several files at once) and **Import BIOS from a Folder…**,
+in the Machine menu, on that page and on the ROMs page of Preferences, take
+single images, a zip (MAME's `astrocde.zip` set works) or a folder. Files are
+recognised by size and CRC32 whatever they are called, copied into the ROM
+directory under their own names, and the message says what is now available.
+If the selected System ROM isn't imported, the machine boots one that is.
+
 ## Ports
 
 FujiNet's BoIP (bus-over-IP) listener is on **11500** and its web admin UI on

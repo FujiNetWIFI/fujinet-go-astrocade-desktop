@@ -1,6 +1,8 @@
 /*
- * AppDelegate -- the main window (DisplayView), the app menu, the keypad
- * window, and the FujiNet/ROM actions. NOT RUN-VERIFIED on macOS in this
+ * AppDelegate -- the main window (DisplayView, or the No-BIOS page until a
+ * BIOS is imported), the app menu, the keypad window, Settings, and the
+ * FujiNet/BIOS actions. The BIOS import looks and acts as
+ * fujinet-go-msdos-desktop's does. NOT RUN-VERIFIED on macOS in this
  * environment; transposed from the verified GNOME/KDE/Win32 frontends to be
  * validated on the macOS CI runner. See main.m's header.
  *
@@ -13,6 +15,7 @@
 #import "AstroKeyForward.h"
 #import "DebuggerWindow.h"
 #import "DisplayView.h"
+#import "SettingsWindow.h"
 
 #include "bindings.h"
 
@@ -38,6 +41,7 @@
     astrosession *_session;
     NSWindow *_window;
     DisplayView *_display;
+    NSView *_noBios;
     NSWindow *_keypadWindow;
 }
 
@@ -62,21 +66,68 @@
     _window.title = @"FujiNet Go Astrocade";
     [_window center];
 
+    /* the picture and the No-BIOS page share the content view; one shows */
+    NSView *content = [[NSView alloc] initWithFrame:frame];
     _display = [[DisplayView alloc] initWithSession:_session];
-    _window.contentView = _display;
-    [_window makeFirstResponder:_display];
+    _display.frame = content.bounds;
+    _display.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [content addSubview:_display];
+    _noBios = [self buildNoBios:content.bounds];
+    [content addSubview:_noBios];
+    _window.contentView = content;
     [_display start];
 
     [self buildMenu];
+    [self showPage];
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+}
 
-    if (!astrosession_has_system_roms(_session)) {
-        NSAlert *a = [[NSAlert alloc] init];
-        a.messageText = @"No system ROM found";
-        a.informativeText = @"Use Machine ▸ Import System ROM… to add astro.bin.";
-        [a runModal];
-    }
+/* In place of the picture until a BIOS is imported. */
+- (NSView *)buildNoBios:(NSRect)frame
+{
+    NSImageView *icon = [NSImageView imageViewWithImage:[NSApp applicationIconImage]];
+    [icon.widthAnchor constraintEqualToConstant:96].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:96].active = YES;
+    NSTextField *title = [NSTextField labelWithString:@"No Astrocade BIOS"];
+    title.font = [NSFont boldSystemFontOfSize:22];
+    NSTextField *desc = [NSTextField wrappingLabelWithString:
+        @"Bally's BIOS ROM is not part of the app. Import the one you have — astro.bin, "
+        @"ballyhlc.bin or bioswhit.bin, a zip such as MAME's astrocde set, or a folder — "
+        @"and the Astrocade starts."];
+    desc.alignment = NSTextAlignmentCenter;
+    desc.textColor = [NSColor secondaryLabelColor];
+    desc.preferredMaxLayoutWidth = 460;
+    [desc.widthAnchor constraintEqualToConstant:460].active = YES;
+    NSButton *files = [NSButton buttonWithTitle:@"Import BIOS…" target:self action:@selector(importBios:)];
+    files.bezelColor = [NSColor controlAccentColor];
+    files.keyEquivalent = @"\r";
+    NSButton *folder = [NSButton buttonWithTitle:@"Import a Folder…" target:self action:@selector(importBiosFolder:)];
+    NSStackView *buttons = [NSStackView stackViewWithViews:@[files, folder]];
+    buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    buttons.spacing = 12;
+    NSStackView *column = [NSStackView stackViewWithViews:@[icon, title, desc, buttons]];
+    column.orientation = NSUserInterfaceLayoutOrientationVertical;
+    column.alignment = NSLayoutAttributeCenterX;
+    column.spacing = 14;
+    column.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSView *page = [[NSView alloc] initWithFrame:frame];
+    page.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [page addSubview:column];
+    [column.centerXAnchor constraintEqualToAnchor:page.centerXAnchor].active = YES;
+    [column.centerYAnchor constraintEqualToAnchor:page.centerYAnchor].active = YES;
+    return page;
+}
+
+/* The picture while there is a BIOS to boot, else the No-BIOS page. */
+- (void)showPage
+{
+    const BOOL bios = astrosession_has_system_roms(_session) != 0;
+    _display.hidden = !bios;
+    _noBios.hidden = bios;
+    if (bios)
+        [_window makeFirstResponder:_display];
 }
 
 - (void)restartSession
@@ -84,7 +135,21 @@
     astrosession_start_opts opts;
     astrosession_stop(_session);
     astrosession_default_opts(_session, &opts);
-    astrosession_start(_session, &opts);
+    if (astrosession_start(_session, &opts) != 0) {
+        NSAlert *a = [[NSAlert alloc] init];
+        a.messageText = @"Could not start";
+        a.informativeText = @(astrosession_last_error(_session));
+        [a runModal];
+    }
+    [self showPage];
+}
+
+/* Starts the machine once a BIOS is there to boot (after an import). */
+- (void)startMachine
+{
+    [self showPage];
+    if (!astrosession_is_running(_session) && astrosession_has_system_roms(_session))
+        [self restartSession];
 }
 
 /* ---- menu ---- */
@@ -100,6 +165,9 @@
     [appMenu addItemWithTitle:@"About FujiNet Go Astrocade"
                        action:@selector(showAbout:) keyEquivalent:@""].target = self;
     [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Settings…"
+                       action:@selector(showSettings:) keyEquivalent:@","].target = self;
+    [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
     appItem.submenu = appMenu;
 
@@ -108,8 +176,11 @@
     NSMenu *machine = [[NSMenu alloc] initWithTitle:@"Machine"];
     [machine addItemWithTitle:@"Open Cartridge…"
                        action:@selector(openCart:) keyEquivalent:@"o"].target = self;
-    [machine addItemWithTitle:@"Import System ROM…"
-                       action:@selector(importRom:) keyEquivalent:@""].target = self;
+    [machine addItem:[NSMenuItem separatorItem]];
+    [machine addItemWithTitle:@"Import BIOS…"
+                       action:@selector(importBios:) keyEquivalent:@""].target = self;
+    [machine addItemWithTitle:@"Import BIOS from a Folder…"
+                       action:@selector(importBiosFolder:) keyEquivalent:@""].target = self;
     machineItem.submenu = machine;
 
     NSMenuItem *viewItem = [[NSMenuItem alloc] init];
@@ -150,23 +221,61 @@
     }
 }
 
-- (void)importRom:(id)sender
+/* ---- the BIOS ---- */
+
+/* Each chosen file (or the folder) through the import; the machine starts if
+ * it now can, then one alert says what came of it all. */
+- (void)importBiosURLs:(NSArray<NSURL *> *)urls
+{
+    NSMutableArray<NSString *> *log = [NSMutableArray array];
+    int imported = 0;
+    for (NSURL *u in urls) {
+        char msg[1024];
+        msg[0] = '\0';
+        if (astrosession_rom_import(_session, [u fileSystemRepresentation], msg, (int)sizeof msg) == 0)
+            imported++;
+        if (msg[0]) [log addObject:@(msg)];
+    }
+    [self startMachine];
+    if ([log count]) {
+        NSAlert *a = [[NSAlert alloc] init];
+        a.messageText = imported ? @"BIOS Imported" : @"Nothing Imported";
+        a.informativeText = [log componentsJoinedByString:@"\n"];
+        [a runModal];
+    }
+}
+
+- (void)importBiosFrom:(BOOL)folder
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    [panel setMessage:folder ? @"Import BIOS from a Folder (MAME's astrocde set works)"
+                             : @"Import BIOS: images or zips"];
+    [panel setCanChooseDirectories:folder];
+    [panel setCanChooseFiles:!folder];
+    [panel setAllowsMultipleSelection:!folder];
+    [panel beginSheetModalForWindow:_window completionHandler:^(NSModalResponse r) {
+        if (r != NSModalResponseOK) return;
+        NSArray<NSURL *> *urls = [panel URLs];
+        /* after the sheet: what came in is an alert of its own */
+        dispatch_async(dispatch_get_main_queue(), ^{ [self importBiosURLs:urls]; });
+    }];
+}
+
+- (void)importBios:(id)sender { (void)sender; [self importBiosFrom:NO]; }
+- (void)importBiosFolder:(id)sender { (void)sender; [self importBiosFrom:YES]; }
+
+/* A changed setting restarts the machine; a BIOS imported there starts it. */
+- (void)showSettings:(id)sender
 {
     (void)sender;
-    NSOpenPanel *panel = [NSOpenPanel openPanel];
-    if ([panel runModal] == NSModalResponseOK) {
-        char name[64];
-        if (astrosession_import_rom(_session, panel.URL.fileSystemRepresentation,
-                                    name, sizeof name) == 0) {
-            if (!astrosession_is_running(_session))
-                [self restartSession];
-        } else {
-            NSAlert *a = [[NSAlert alloc] init];
-            a.messageText = @"Import failed";
-            a.informativeText = @(astrosession_last_error(_session));
-            [a runModal];
-        }
-    }
+    __weak AppDelegate *weakSelf = self;
+    [SettingsWindow showForSession:_session
+                          romsPage:NO
+                          imported:^{ [weakSelf showPage]; }
+                            closed:^(BOOL dirty) {
+                                if (dirty) [weakSelf restartSession];
+                                else [weakSelf startMachine];
+                            }];
 }
 
 - (void)showDebugger:(id)sender { (void)sender; [DebuggerWindow showDebuggerForSession:_session]; }
@@ -239,8 +348,11 @@
         "C","↑","↓","%", "MR","MS","CH","÷", "7","8","9","×",
         "4","5","6","−", "1","2","3","+", "CE","0",".","=",
     };
+    /* exactly the buttons and their margins: 4 x 64 + 3 x 4 wide, six rows
+     * of 40 + 5 x 4, the system row of 30 and a 10 gap above it */
+    enum { PAD_W = 8 + 4 * 64 + 3 * 4 + 8, PAD_H = 8 + 30 + 10 + 6 * 40 + 5 * 4 + 8 };
     _keypadWindow = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 300, 400)
+        initWithContentRect:NSMakeRect(0, 0, PAD_W, PAD_H)
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                     backing:NSBackingStoreBuffered defer:NO];
     _keypadWindow.title = @"Keypad";
@@ -250,7 +362,7 @@
     for (int key = 0; key < ASTROSESSION_KEY_COUNT; key++) {
         int row = key / 4, col = key % 4;
         PadButton *b = [[PadButton alloc] initWithFrame:
-            NSMakeRect(8 + col * 68, 400 - 44 - (row * 44), 64, 40)];
+            NSMakeRect(8 + col * 68, PAD_H - 8 - 40 - row * 44, 64, 40)];
         b.title = @(labels[key]);
         b.bezelStyle = NSBezelStyleRounded;
         b.astroKey = key;
@@ -263,11 +375,11 @@
         [content addSubview:b];
     }
     /* System row */
-    NSButton *rg = [[NSButton alloc] initWithFrame:NSMakeRect(8, 8, 130, 30)];
+    NSButton *rg = [[NSButton alloc] initWithFrame:NSMakeRect(8, 8, 132, 30)];
     rg.title = @"Reset Game"; rg.bezelStyle = NSBezelStyleRounded;
     rg.target = self; rg.action = @selector(resetGame:);
     [content addSubview:rg];
-    NSButton *rc = [[NSButton alloc] initWithFrame:NSMakeRect(146, 8, 140, 30)];
+    NSButton *rc = [[NSButton alloc] initWithFrame:NSMakeRect(144, 8, 132, 30)];
     rc.title = @"Reset to CONFIG"; rc.bezelStyle = NSBezelStyleRounded;
     rc.target = self; rc.action = @selector(resetConfig:);
     [content addSubview:rc];

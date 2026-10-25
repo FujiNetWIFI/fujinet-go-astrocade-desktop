@@ -17,6 +17,13 @@ G_DECLARE_FINAL_TYPE(AstroWindow, astro_window, ASTRO, WINDOW,
 GtkWidget *astro_window_new(AdwApplication *app, astrosession *session);
 void       astro_window_toast(AstroWindow *self, const char *message);
 void       astro_window_restart_session(AstroWindow *self);
+/* The picture, or the No-BIOS page when there is nothing to boot. */
+void       astro_window_show_page(AstroWindow *self);
+/* Starts the machine if it isn't running and a BIOS is there to boot. */
+void       astro_window_start(AstroWindow *self);
+/* A file chooser with a "these" filter (suffixes, any case) and All files. */
+GtkFileDialog *astro_file_dialog(const char *title, const char *filter_name,
+                                 const char *const *exts);
 
 /* main.c */
 const char *astro_icon_name(void);

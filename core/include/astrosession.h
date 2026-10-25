@@ -111,15 +111,30 @@ const char *astrosession_exp_name(int idx);
 /* ---- ROM provisioning --------------------------------------------------- */
 
 /* 1 when the ROM directory (or an embedded table) holds a usable BIOS -- a
- * frontend refuses to start and prompts "Import System ROMs..." when 0. */
+ * frontend shows its "No Astrocade BIOS" page instead of the picture when 0. */
 int astrosession_has_system_roms(const astrosession *s);
 
-/* Copy a user-chosen file into the ROM directory, identifying it by size +
- * CRC32 against the three known BIOS dumps. Returns 0 and (if name_out) the
- * canonical filename it was stored as; -1 with astrosession_last_error() set
- * when the file is not a recognized Astrocade BIOS. */
-int astrosession_import_rom(astrosession *s, const char *path,
-                            char *name_out, int name_out_len);
+/* The ROMs page's list: one item per BIOS, index-aligned with
+ * ASTROSESSION_BIOS_* (item i is variant i), all in the group "BIOS". */
+typedef struct { const char *name; const char *group; } astro_rom_item;
+int astrosession_rom_item_count(void);
+const astro_rom_item *astrosession_rom_item(int i);      /* NULL past the end */
+/* 1 when item i is imported (or embedded). */
+int astrosession_rom_item_available(const astrosession *s, int i);
+
+/* The variant a start will boot: wanted when it is available, else the first
+ * one that is; -1 when there is none. */
+int astrosession_resolve_bios(const astrosession *s, int wanted);
+
+/* Imports BIOS images from a file, a zip (MAME's astrocde set works) or a
+ * folder, recognising them by size and CRC32 whatever they are called and
+ * copying each into the ROM directory under its own name. Returns 0 when at
+ * least one file was written, -1 otherwise; msg says what is now available
+ * (or why nothing was imported). */
+int astrosession_rom_import(astrosession *s, const char *path, char *msg, int msgsz);
+
+/* The ROM directory imports are copied into. */
+const char *astrosession_roms_path(const astrosession *s);
 
 /* ---- lifecycle ---------------------------------------------------------- */
 int  astrosession_start(astrosession *s, const astrosession_start_opts *opts);

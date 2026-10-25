@@ -30,6 +30,26 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-10-24">
+      <description>
+        <p>
+          Importing the BIOS now works as in FujiNet Go MS-DOS: a No
+          Astrocade BIOS page until one is imported; Import BIOS and Import
+          BIOS from a Folder take single images, a zip such as MAME's
+          astrocde set, or a folder, and recognise the BIOS by its checksum;
+          Preferences gains a ROMs page; and the machine boots whichever BIOS
+          is imported if the selected one isn't.
+        </p>
+        <p>
+          Windows: the picture is drawn with Direct3D 11 at the display's
+          refresh, with no flicker; the machine keeps exact 60 Hz time; the
+          debugger has Z80, Video chip and FujiNet tabs laid out to fit the
+          window, with views that keep their place; the FujiNet console log
+          shows the runtime's output; the keypad fits its buttons and shows
+          its arrow keys; Preferences is new.
+        </p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-10-19">
       <description>
         <p>

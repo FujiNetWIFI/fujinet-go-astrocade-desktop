@@ -3,42 +3,43 @@
  *
  * The core takes the BIOS as a plain buffer (astro_host_opts.bios). This
  * resolves that buffer from the ROM directory (a file the user imported) or,
- * failing that, from the WITH_ASTROCADE_ROMS embedded table -- and imports a
- * user-chosen file by identifying it against the three known BIOS dumps by
- * size and CRC32, so a wrong file is rejected rather than half-booting. See
- * COMPLIANCE.md.
+ * failing that, from the WITH_ASTROCADE_ROMS embedded table -- and imports
+ * what the user points at (single images, a zip such as MAME's astrocde set,
+ * or a folder), recognising the three known BIOS dumps by size and CRC32
+ * whatever they are called, so a wrong file is left alone rather than
+ * half-booting. See COMPLIANCE.md.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "astro_internal.h"    /* ASTRO_BIOS_SIZE */
 #include "roms_embedded.h"
 #include "session_internal.h"
+#include "zipread.h"
 
-/* The three console dumps (MAME astrohome.cpp ROM defs). */
+/* The three console dumps (MAME astrohome.cpp ROM defs), index-aligned with
+ * ASTROSESSION_BIOS_*: item i of the ROMs list is BIOS variant i. */
 static const struct {
-    const char *name;
+    const char *name;           /* the file in the ROM directory */
     uint32_t crc32;
-    int variant;
+    astro_rom_item item;
 } k_bios[] = {
-    { "astro.bin",    0xebc77f3au, ASTROSESSION_BIOS_ASTRO },
-    { "ballyhlc.bin", 0xd7c517bau, ASTROSESSION_BIOS_BALLYHLC },
-    { "bioswhit.bin", 0x6eb53e79u, ASTROSESSION_BIOS_BIOSWHIT },
+    { "astro.bin",    0xebc77f3au,
+      { "Bally Professional Arcade BIOS (astro.bin)", "BIOS" } },
+    { "ballyhlc.bin", 0xd7c517bau,
+      { "Bally Home Library Computer BIOS (ballyhlc.bin)", "BIOS" } },
+    { "bioswhit.bin", 0x6eb53e79u,
+      { "Bally Computer System BIOS (bioswhit.bin)", "BIOS" } },
 };
 #define N_BIOS ((int)(sizeof k_bios / sizeof k_bios[0]))
-
-static const char *variant_name(int variant)
-{
-    for (int i = 0; i < N_BIOS; i++)
-        if (k_bios[i].variant == variant)
-            return k_bios[i].name;
-    return k_bios[0].name;
-}
 
 /* CRC32 (IEEE, the zip/MAME polynomial), table-free. */
 static uint32_t crc32_of(const uint8_t *p, size_t n)
@@ -76,22 +77,56 @@ static const astro_embedded_rom *embedded(const char *name)
     return NULL;
 }
 
+/* ---- the ROMs list ---- */
+
+int astrosession_rom_item_count(void)
+{
+    return N_BIOS;
+}
+
+const astro_rom_item *astrosession_rom_item(int i)
+{
+    return i >= 0 && i < N_BIOS ? &k_bios[i].item : NULL;
+}
+
+int astrosession_rom_item_available(const astrosession *s, int i)
+{
+    if (i < 0 || i >= N_BIOS)
+        return 0;
+    const astro_embedded_rom *e = embedded(k_bios[i].name);
+    if (e && e->size == ASTRO_BIOS_SIZE)
+        return 1;
+    char path[ASTRO_PATH_MAX + 32];
+    struct stat st;
+    snprintf(path, sizeof path, "%s/%s", s->roms_dir, k_bios[i].name);
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == ASTRO_BIOS_SIZE;
+}
+
+const char *astrosession_roms_path(const astrosession *s)
+{
+    return s->roms_dir;
+}
+
+int astrosession_resolve_bios(const astrosession *s, int wanted)
+{
+    if (astrosession_rom_item_available(s, wanted))
+        return wanted;
+    for (int i = 0; i < N_BIOS; i++)
+        if (astrosession_rom_item_available(s, i))
+            return i;
+    return -1;
+}
+
 int roms_any_available(const struct astrosession *s)
 {
-    if (astro_embedded_rom_count > 0)
-        return 1;
-    for (int i = 0; i < N_BIOS; i++) {
-        char path[ASTRO_PATH_MAX + 32];
-        snprintf(path, sizeof path, "%s/%s", s->roms_dir, k_bios[i].name);
-        FILE *f = fopen(path, "rb");
-        if (f) { fclose(f); return 1; }
-    }
-    return 0;
+    return astrosession_resolve_bios(s, ASTROSESSION_BIOS_ASTRO) >= 0;
 }
 
 uint8_t *roms_load_bios(struct astrosession *s, int variant)
 {
-    const char *name = variant_name(variant);
+    if (variant < 0 || variant >= N_BIOS)
+        variant = ASTROSESSION_BIOS_ASTRO;
+    const char *name = k_bios[variant].name;
     char path[ASTRO_PATH_MAX + 32];
     size_t got = 0;
 
@@ -110,14 +145,14 @@ uint8_t *roms_load_bios(struct astrosession *s, int variant)
         return b;
     }
 
-    session_set_error(s, "no %s BIOS found -- import one via the ROM menu", name);
+    session_set_error(s, "No Astrocade BIOS yet: use Machine > Import BIOS");
     return NULL;
 }
 
 void roms_provision_embedded(struct astrosession *s)
 {
     /* Materialise each embedded BIOS into the ROM dir on first run, so the
-     * dir the "Import System ROMs..." UI shows already has them and a later
+     * dir the ROMs page shows already has them and a later
      * WITH_ASTROCADE_ROMS=OFF build of the same app keeps working. */
     for (int i = 0; i < astro_embedded_rom_count; i++) {
         const astro_embedded_rom *e = &astro_embedded_roms[i];
@@ -130,41 +165,124 @@ void roms_provision_embedded(struct astrosession *s)
     }
 }
 
-int astrosession_import_rom(astrosession *s, const char *path,
-                            char *name_out, int name_out_len)
+/* ---- import: a file, a zip or a folder ---- */
+
+typedef struct {
+    astrosession *s;
+    int imported;               /* files written */
+    int got[N_BIOS];            /* which BIOS this import supplied */
+} import_ctx;
+
+/* One candidate image: every BIOS with its CRC is written under its own
+ * name, whatever the file was called. */
+static void take(import_ctx *ctx, const uint8_t *data, uint32_t size)
 {
-    size_t got = 0;
-    uint8_t *buf = read_file(path, ASTRO_BIOS_SIZE, &got);
-    if (!buf || got != ASTRO_BIOS_SIZE) {
-        free(buf);
-        session_set_error(s, "%s is not an 8192-byte Astrocade BIOS", path);
-        return -1;
+    if (size != ASTRO_BIOS_SIZE)
+        return;
+    uint32_t crc = crc32_of(data, size);
+    for (int i = 0; i < N_BIOS; i++) {
+        char path[ASTRO_PATH_MAX + 32];
+        FILE *f;
+        if (k_bios[i].crc32 != crc)
+            continue;
+        snprintf(path, sizeof path, "%s/%s", ctx->s->roms_dir, k_bios[i].name);
+        f = fopen(path, "wb");
+        if (!f)
+            continue;
+        if (fwrite(data, 1, size, f) == size && !ctx->got[i]) {
+            ctx->got[i] = 1;
+            ctx->imported++;
+        }
+        fclose(f);
     }
+}
 
-    uint32_t crc = crc32_of(buf, ASTRO_BIOS_SIZE);
-    const char *name = NULL;
+static void import_path(import_ctx *ctx, const char *path, int depth);
+
+static void import_zip(import_ctx *ctx, zipread *z)
+{
+    for (int i = 0; i < zipread_count(z); i++) {
+        uint8_t *data = NULL;
+        uint32_t size = 0;
+        if (zipread_size(z, i) != ASTRO_BIOS_SIZE)
+            continue;
+        if (zipread_extract(z, i, &data, &size, ASTRO_BIOS_SIZE) == 0) {
+            take(ctx, data, size);
+            free(data);
+        }
+    }
+}
+
+static void import_dir(import_ctx *ctx, const char *dir, int depth)
+{
+    char path[ASTRO_PATH_MAX * 2];
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    if (!d)
+        return;
+    while ((e = readdir(d)) != NULL) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+            continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        import_path(ctx, path, depth + 1);
+    }
+    closedir(d);
+}
+
+static void import_path(import_ctx *ctx, const char *path, int depth)
+{
+    struct stat st;
+    zipread *z;
+    if (depth > 8 || stat(path, &st) != 0)
+        return;
+    if (S_ISDIR(st.st_mode)) {
+        import_dir(ctx, path, depth);
+        return;
+    }
+    z = zipread_open(path);
+    if (z) {
+        import_zip(ctx, z);
+        zipread_close(z);
+        return;
+    }
+    if (st.st_size == ASTRO_BIOS_SIZE) {
+        size_t got = 0;
+        uint8_t *data = read_file(path, ASTRO_BIOS_SIZE, &got);
+        if (data && got == ASTRO_BIOS_SIZE)
+            take(ctx, data, (uint32_t)got);
+        free(data);
+    }
+}
+
+int astrosession_rom_import(astrosession *s, const char *path, char *msg, int msgsz)
+{
+    import_ctx ctx;
+    int before[N_BIOS];
+    int len = 0;
+
+    memset(&ctx, 0, sizeof ctx);
+    ctx.s = s;
     for (int i = 0; i < N_BIOS; i++)
-        if (k_bios[i].crc32 == crc) { name = k_bios[i].name; break; }
-    if (!name) {
-        free(buf);
-        session_set_error(s, "%s is 8K but not a recognized Astrocade BIOS "
-                          "(crc %08x)", path, crc);
-        return -1;
-    }
+        before[i] = astrosession_rom_item_available(s, i);
+    if (path && *path)
+        import_path(&ctx, path, 0);
 
-    char dst[ASTRO_PATH_MAX + 32];
-    snprintf(dst, sizeof dst, "%s/%s", s->roms_dir, name);
-    FILE *f = fopen(dst, "wb");
-    if (!f) {
-        free(buf);
-        session_set_error(s, "cannot write %s", dst);
-        return -1;
+    if (msg && msgsz > 0) {
+        msg[0] = '\0';
+        for (int i = 0; i < N_BIOS; i++) {
+            if (!before[i] && astrosession_rom_item_available(s, i))
+                len += snprintf(msg + len, (size_t)(msgsz > len ? msgsz - len : 0), "%s%s",
+                                len ? ", " : "Now available: ", k_bios[i].item.name);
+        }
+        if (!len) {
+            if (ctx.imported)
+                snprintf(msg, (size_t)msgsz,
+                         "Imported %d file%s; %s already available", ctx.imported,
+                         ctx.imported == 1 ? "" : "s", ctx.imported == 1 ? "it was" : "each was");
+            else
+                snprintf(msg, (size_t)msgsz, "No Astrocade BIOS was found in %s",
+                         path ? path : "");
+        }
     }
-    fwrite(buf, 1, ASTRO_BIOS_SIZE, f);
-    fclose(f);
-    free(buf);
-
-    if (name_out && name_out_len > 0)
-        snprintf(name_out, name_out_len, "%s", name);
-    return 0;
+    return ctx.imported > 0 ? 0 : -1;
 }

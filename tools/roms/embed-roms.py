@@ -9,7 +9,7 @@ plus the Bally Computer System / Home Library Computer variants) is
 copyrighted firmware with no freely-redistributable class -- exactly like
 the Intellivision port's Mattel EXEC/GROM. So there is only one class
 (--roms), and with WITH_ASTROCADE_ROMS=OFF the caller passes none at all:
-the generated table is empty and the session's "Import System ROMs..." path
+the generated table is empty and the session's "Import BIOS..." path
 is the only way to provision them. See COMPLIANCE.md.
 
 The generated file lives in the build tree only.

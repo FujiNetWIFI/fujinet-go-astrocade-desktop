@@ -15,15 +15,22 @@ configure_file(app.manifest.in "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" @ONLY)
 
 add_executable(fujinet-go-astrocade-windows WIN32
   main.c
+  display.c
+  fujilog.c
+  import.c
+  prefs.c
   debugger/dbg_window.c
   resource.rc
 )
 # The core is all C (unlike the sibling ports whose emulator had a C++ TU), so
 # no libstdc++ is needed on the link line -- astro_session/astro_core link
 # cleanly with the C driver.
+# d3d11: the picture (display.c; d3dcompiler_47 and avrt are loaded, not
+# linked). dwmapi: DwmFlush, the GDI fallback's frame clock. ole32: the
+# folder browser's COM.
 target_link_libraries(fujinet-go-astrocade-windows PRIVATE
   astro_session astro_core
-  gdi32 user32 comdlg32 shell32 comctl32 ws2_32
+  d3d11 dwmapi gdi32 user32 comdlg32 shell32 ole32 comctl32 ws2_32
 )
 target_include_directories(fujinet-go-astrocade-windows PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
