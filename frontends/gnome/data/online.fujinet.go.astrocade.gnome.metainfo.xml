@@ -3,7 +3,7 @@
   <id>online.fujinet.go.astrocade.gnome</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <name>FujiNet Go Astrocade</name>
+  <name>FujiNet Go Astrocade (GNOME)</name>
   <summary>Self-contained Bally Astrocade with built-in FujiNet</summary>
   <description>
     <p>
@@ -18,6 +18,7 @@
     </p>
   </description>
   <launchable type="desktop-id">online.fujinet.go.astrocade.gnome.desktop</launchable>
+  <icon type="stock">online.fujinet.go.astrocade.gnome</icon>
   <!-- Software centres classify from these, not from the .desktop
        Categories= line; without them the app lands in no section at all. -->
   <categories>
@@ -27,10 +28,33 @@
   <url type="homepage">https://fujinet.online/</url>
   <url type="bugtracker">https://github.com/FujiNetWIFI/fujinet-go-astrocade-desktop/issues</url>
   <developer id="online.fujinet">
-    <name>Thomas Cherryhomes</name>
+    <name>FujiNet</name>
   </developer>
   <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>FujiNet CONFIG running on the emulated Astrocade</caption>
+      <image type="source">https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-astrocade-desktop/v0.4.1/data/screenshots/1_config.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The debugger FujiNet tab: every FujiBus packet, live</caption>
+      <image type="source">https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-astrocade-desktop/v0.4.1/data/screenshots/2_debugger.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Preferences: system ROM, RAM expansion and ROMs</caption>
+      <image type="source">https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-astrocade-desktop/v0.4.1/data/screenshots/3_preferences.png</image>
+    </screenshot>
+  </screenshots>
   <releases>
+    <release version="0.4.1" date="2026-10-27">
+      <description>
+        <p>
+          The Flatpak builds on the GNOME 51 runtime. The software-centre
+          listing now credits FujiNet as developer, declares the app icon,
+          and shows a full set of screenshots for each frontend.
+        </p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-24">
       <description>
         <p>
