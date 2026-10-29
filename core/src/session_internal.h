@@ -33,6 +33,7 @@ struct astrosession {
     int settings_dirty;
 
     char boip_hostport[64];   /* "127.0.0.1:11500" -- handed to the cart */
+    int  fujinet_external;    /* dialling a FujiNet that isn't ours */
     char last_error[256];
 
     /* ---- FujiNet runtime (fujinet_runtime.c) ---- */

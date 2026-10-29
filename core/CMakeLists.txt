@@ -230,6 +230,10 @@ target_link_libraries(bindings_test astro_session)
 target_include_directories(bindings_test PRIVATE src)
 add_test(NAME bindings_test COMMAND bindings_test)
 
+add_executable(hostport_test tests/hostport_test.c)
+target_link_libraries(hostport_test astro_session)
+add_test(NAME hostport_test COMMAND hostport_test)
+
 add_executable(gamepad_test tests/gamepad_test.c)
 target_link_libraries(gamepad_test astro_session)
 target_include_directories(gamepad_test PRIVATE src)

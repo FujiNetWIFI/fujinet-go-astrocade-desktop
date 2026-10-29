@@ -269,7 +269,13 @@ static void refresh_fujinet(DbgWindow *d, gboolean force)
     char state[2048];
     int n = astrodebug_fujinet_trace(d->dbg, p, TRACE_MAX);
 
-    if (astrosession_fujinet_link(d->session))
+    if (astrosession_fujinet_external(d->session)) {
+        char note[160];
+        g_snprintf(note, sizeof note, "External FujiNet at %s, %s.",
+                   astrosession_boip_endpoint(d->session),
+                   astrosession_fujinet_link(d->session) ? "connected" : "not connected");
+        gtk_label_set_text(d->fuji_note, note);
+    } else if (astrosession_fujinet_link(d->session))
         gtk_label_set_text(d->fuji_note, "FujiNet cartridge, connected.");
     else if (astrosession_fujinet_running(d->session))
         gtk_label_set_text(d->fuji_note, "FujiNet cartridge, not connected.");

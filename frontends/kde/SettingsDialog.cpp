@@ -6,6 +6,7 @@
 
 #include "SettingsDialog.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -14,6 +15,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
@@ -154,6 +156,25 @@ bool SettingsDialog::run(QWidget *parent, astrosession *session,
     form->addRow("RAM Expansion", exp);
     mv->addLayout(form);
     mv->addWidget(new QLabel("Changes take effect when the machine restarts."));
+
+    auto *fujinetBox = new QGroupBox(QStringLiteral("FujiNet"));
+    auto *fujinetForm = new QFormLayout(fujinetBox);
+    auto *external = new QCheckBox(QStringLiteral("Use external FujiNet"));
+    external->setChecked(astrosession_get_int(session, "fujinet_external", 0) != 0);
+    auto *externalAddr = new QLineEdit(
+        QString::fromUtf8(astrosession_get_str(session, "fujinet_external_addr", "")));
+    externalAddr->setPlaceholderText(QStringLiteral("127.0.0.1:11500"));
+    externalAddr->setEnabled(external->isChecked());
+    QObject::connect(external, &QCheckBox::toggled, externalAddr, &QWidget::setEnabled);
+    fujinetForm->addRow(external);
+    fujinetForm->addRow(QStringLiteral("Address:port"), externalAddr);
+    auto *hint = new QLabel(QStringLiteral(
+        "Skips the built-in FujiNet and connects to another instance: its "
+        "[BOIP] listener's host and port."));
+    hint->setWordWrap(true);
+    hint->setStyleSheet(kGray);
+    fujinetForm->addRow(hint);
+    mv->addWidget(fujinetBox);
     mv->addStretch(1);
     tabs->addTab(machine, "Machine");
 
@@ -166,7 +187,21 @@ bool SettingsDialog::run(QWidget *parent, astrosession *session,
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
                                          QDialogButtonBox::Cancel);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, [&] {
+        char host[64];
+        int port;
+        const QByteArray addr = externalAddr->text().trimmed().toUtf8();
+        if (external->isChecked() &&
+            astrosession_parse_hostport(addr.constData(), host, sizeof host, &port) != 0) {
+            QMessageBox::warning(&dlg, QStringLiteral("External FujiNet"),
+                                 QStringLiteral("\"%1\" is not an address:port. Example: "
+                                                "127.0.0.1:11500")
+                                     .arg(externalAddr->text()));
+            externalAddr->setFocus();
+            return;
+        }
+        dlg.accept();
+    });
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     outer->addWidget(buttons);
     dlg.resize(dlg.sizeHint().expandedTo(QSize(560, 420)));
@@ -183,6 +218,15 @@ bool SettingsDialog::run(QWidget *parent, astrosession *session,
     if (exp->currentIndex() != astrosession_get_int(session, "exp",
                                                     ASTROSESSION_EXP_NONE)) {
         astrosession_set_int(session, "exp", exp->currentIndex());
+        changed = true;
+    }
+    if (external->isChecked() != (astrosession_get_int(session, "fujinet_external", 0) != 0)) {
+        astrosession_set_int(session, "fujinet_external", external->isChecked() ? 1 : 0);
+        changed = true;
+    }
+    const QString addr = externalAddr->text().trimmed();
+    if (addr != QString::fromUtf8(astrosession_get_str(session, "fujinet_external_addr", ""))) {
+        astrosession_set_str(session, "fujinet_external_addr", addr.toUtf8().constData());
         changed = true;
     }
     return changed;

@@ -289,7 +289,11 @@ static void setText(NSTextView *view, NSString *text, BOOL follow)
     int n = astrodebug_fujinet_trace(_dbg, p, TRACE_MAX);
     size_t len = 0;
 
-    if (astrosession_fujinet_link(_session))
+    if (astrosession_fujinet_external(_session))
+        _fujiNote.stringValue = [NSString stringWithFormat:@"External FujiNet at %s, %s.",
+                                 astrosession_boip_endpoint(_session),
+                                 astrosession_fujinet_link(_session) ? "connected" : "not connected"];
+    else if (astrosession_fujinet_link(_session))
         _fujiNote.stringValue = @"FujiNet cartridge, connected.";
     else if (astrosession_fujinet_running(_session))
         _fujiNote.stringValue = @"FujiNet cartridge, not connected.";

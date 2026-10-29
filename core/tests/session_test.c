@@ -11,6 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#endif
 
 #include "astrosession.h"
 #include "test_tmpdir.h"
@@ -99,6 +105,49 @@ int main(int argc, char **argv)
             astrosession_reset_game(s);   /* must not crash / not block */
             astrosession_stop(s);
         }
+
+        /* an external FujiNet: a bad address refuses to start; a good one is
+         * dialled by the cartridge, and no built-in runtime is started. The
+         * stand-in listener is a plain TCP socket on an ephemeral port. */
+        astrosession_set_int(s, "fujinet_external", 1);
+        astrosession_set_str(s, "fujinet_external_addr", "not an address");
+        CHECK(astrosession_start(s, NULL) != 0, "bad external address refused");
+        CHECK(!astrosession_is_running(s), "bad external address: not running");
+#ifndef _WIN32
+        {
+            struct sockaddr_in sin;
+            socklen_t sinlen = sizeof sin;
+            char addr[64];
+            int listener = socket(AF_INET, SOCK_STREAM, 0);
+
+            memset(&sin, 0, sizeof sin);
+            sin.sin_family = AF_INET;
+            sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            if (listener >= 0 && bind(listener, (struct sockaddr *)&sin, sizeof sin) == 0 &&
+                listen(listener, 1) == 0 &&
+                getsockname(listener, (struct sockaddr *)&sin, &sinlen) == 0) {
+                struct pollfd pfd = { listener, POLLIN, 0 };
+                int conn = -1;
+
+                snprintf(addr, sizeof addr, "127.0.0.1:%d", ntohs(sin.sin_port));
+                astrosession_set_str(s, "fujinet_external_addr", addr);
+                CHECK(astrosession_start(s, NULL) == 0, astrosession_last_error(s));
+                CHECK(astrosession_fujinet_external(s), "session reports external");
+                CHECK(!astrosession_fujinet_running(s), "no built-in runtime");
+                CHECK(strcmp(astrosession_boip_endpoint(s), addr) == 0, "endpoint is the address");
+                CHECK(astrosession_fujinet_webui_url(s)[0] == '\0', "no web UI URL");
+                if (poll(&pfd, 1, 5000) > 0)
+                    conn = accept(listener, NULL, NULL);
+                CHECK(conn >= 0, "cartridge dialled the external address");
+                if (conn >= 0)
+                    close(conn);
+                astrosession_stop(s);
+                CHECK(!astrosession_fujinet_external(s), "external cleared on stop");
+            }
+            if (listener >= 0)
+                close(listener);
+        }
+#endif
     } else {
         fprintf(stderr, "session_test: SKIP: no BIOS at %s -- skipping "
                 "start/stop\n", argc > 1 ? argv[1] : "(none)");

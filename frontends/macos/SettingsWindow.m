@@ -35,6 +35,8 @@ static SettingsWindow *g_shown;
     NSTabView *_tabs;
     NSPopUpButton *_bios;
     NSPopUpButton *_exp;
+    NSButton *_externalBox;
+    NSTextField *_externalField;
     NSMutableArray<NSTextField *> *_romStates;
     void (^_imported)(void);
     void (^_closed)(BOOL);
@@ -80,6 +82,56 @@ static NSTextField *label(NSString *text, NSRect frame)
         astrosession_set_int(_session, key, sel);
         _dirty = YES;
     }
+}
+
+/* Use external FujiNet: the address field is live only while it is on. */
+- (void)externalToggled:(NSButton *)box
+{
+    const int active = [box state] == NSControlStateValueOn;
+    _externalField.enabled = active;
+    if (astrosession_get_int(_session, "fujinet_external", 0) != active) {
+        astrosession_set_int(_session, "fujinet_external", active);
+        _dirty = YES;
+    }
+}
+
+/* The address: valid text (or none, meaning 127.0.0.1:11500) is saved;
+ * anything else is shown in red, not saved, and keeps the window open. */
+- (BOOL)externalAddrValid
+{
+    NSString *text = [_externalField.stringValue
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    char host[64];
+    int port;
+    if (astrosession_parse_hostport(text.UTF8String, host, sizeof host, &port) != 0) {
+        _externalField.textColor = NSColor.systemRedColor;
+        return NO;
+    }
+    _externalField.textColor = NSColor.controlTextColor;
+    if (strcmp(astrosession_get_str(_session, "fujinet_external_addr", ""), text.UTF8String) != 0) {
+        astrosession_set_str(_session, "fujinet_external_addr", text.UTF8String);
+        _dirty = YES;
+    }
+    return YES;
+}
+
+- (void)externalAddrChanged:(id)sender
+{
+    (void)sender;
+    [self externalAddrValid];
+}
+
+- (BOOL)windowShouldClose:(NSWindow *)sender
+{
+    (void)sender;
+    [_window makeFirstResponder:nil]; /* commit a field edit */
+    if ([_externalBox state] != NSControlStateValueOn || [self externalAddrValid])
+        return YES;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"That is not an address:port";
+    alert.informativeText = @"Example: 127.0.0.1:11500";
+    [alert beginSheetModalForWindow:_window completionHandler:nil];
+    return NO;
 }
 
 - (void)importRoms:(NSButton *)b
@@ -134,6 +186,29 @@ static NSTextField *label(NSString *text, NSRect frame)
                               NSMakeRect(16, top - 116, NSWidth(v.frame) - 32, 20));
     [note setTextColor:[NSColor secondaryLabelColor]];
     [v addSubview:note];
+
+    _externalBox = [NSButton checkboxWithTitle:@"Use external FujiNet" target:self
+                                        action:@selector(externalToggled:)];
+    [_externalBox setFrame:NSMakeRect(16, top - 156, NSWidth(v.frame) - 32, 20)];
+    [_externalBox setState:astrosession_get_int(_session, "fujinet_external", 0)
+                               ? NSControlStateValueOn : NSControlStateValueOff];
+    [v addSubview:_externalBox];
+    [v addSubview:label(@"Address:port", NSMakeRect(16, top - 184, 120, 20))];
+    _externalField = [NSTextField textFieldWithString:@(
+        astrosession_get_str(_session, "fujinet_external_addr", ""))];
+    _externalField.placeholderString = @"127.0.0.1:11500";
+    [_externalField setFrame:NSMakeRect(140, top - 188, NSWidth(v.frame) - 156, 24)];
+    _externalField.enabled = [_externalBox state] == NSControlStateValueOn;
+    _externalField.target = self;
+    _externalField.action = @selector(externalAddrChanged:);
+    [_externalField.cell setSendsActionOnEndEditing:YES];
+    [v addSubview:_externalField];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:
+        @"Skips the built-in FujiNet and connects to another instance: its [BOIP] "
+        @"listener's host and port."];
+    [hint setFrame:NSMakeRect(16, top - 228, NSWidth(v.frame) - 32, 36)];
+    [hint setTextColor:[NSColor secondaryLabelColor]];
+    [v addSubview:hint];
     return v;
 }
 

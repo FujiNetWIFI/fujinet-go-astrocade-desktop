@@ -396,10 +396,21 @@ static void do_command(int id)
     case IDM_RESET_GAME:    astrosession_reset_game(g_session); break;
     case IDM_RESET_CONFIG:  astrosession_reset_to_config(g_session); break;
     case IDM_FUJINET_CONFIG:
+        if (astrosession_fujinet_external(g_session)) {
+            astro_message(g_hwnd, "FujiNet is external: use the web UI of that instance.",
+                          "FujiNet Go Astrocade", MB_OK | MB_ICONINFORMATION);
+            break;
+        }
         ShellExecuteA(NULL, "open", astrosession_fujinet_webui_url(g_session),
                       NULL, NULL, SW_SHOWNORMAL);
         break;
     case IDM_FUJINET_LOG:
+        if (astrosession_fujinet_external(g_session)) {
+            astro_message(g_hwnd, "FujiNet is external: its console output is in the "
+                          "process that is running it.", "FujiNet Go Astrocade",
+                          MB_OK | MB_ICONINFORMATION);
+            break;
+        }
         astro_fujilog_show(g_hwnd, g_session);
         break;
     case IDM_ABOUT: {

@@ -299,7 +299,13 @@ void DebuggerWindow::refreshFujinet(bool force)
     char state[2048];
     const int n = astrodebug_fujinet_trace(m_dbg, p, TRACE_MAX);
 
-    if (astrosession_fujinet_link(m_session))
+    if (astrosession_fujinet_external(m_session))
+        m_fujiNote->setText(QStringLiteral("External FujiNet at %1, %2.")
+                                .arg(QString::fromUtf8(astrosession_boip_endpoint(m_session)))
+                                .arg(astrosession_fujinet_link(m_session)
+                                         ? QStringLiteral("connected")
+                                         : QStringLiteral("not connected")));
+    else if (astrosession_fujinet_link(m_session))
         m_fujiNote->setText(QStringLiteral("FujiNet cartridge, connected."));
     else if (astrosession_fujinet_running(m_session))
         m_fujiNote->setText(QStringLiteral("FujiNet cartridge, not connected."));

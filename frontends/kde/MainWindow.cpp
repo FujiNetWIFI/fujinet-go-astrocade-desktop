@@ -222,6 +222,10 @@ void MainWindow::buildMenus()
         else showToast("Reset to CONFIG");
     });
     fujinet->addAction("FujiNet Configuration…", this, [this] {
+        if (astrosession_fujinet_external(m_session)) {
+            showToast(QStringLiteral("FujiNet is external: use its own web UI"));
+            return;
+        }
         QDesktopServices::openUrl(
             QUrl(astrosession_fujinet_webui_url(m_session)));
     });
@@ -239,6 +243,10 @@ void MainWindow::buildMenus()
 
 void MainWindow::showFujinetLog()
 {
+    if (astrosession_fujinet_external(m_session)) {
+        showToast(QStringLiteral("FujiNet is external: see its own console"));
+        return;
+    }
     /* a non-modal window with a monospace read-only view refreshed each
      * second; owned by the main window so it closes with it */
     auto *dlg = new QDialog(this);

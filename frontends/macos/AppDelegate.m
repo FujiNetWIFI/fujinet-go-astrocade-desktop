@@ -285,6 +285,13 @@
 - (void)fujinetConfig:(id)sender
 {
     (void)sender;
+    if (astrosession_fujinet_external(_session)) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"FujiNet is external";
+        alert.informativeText = @"Use the web UI of that FujiNet instance.";
+        [alert runModal];
+        return;
+    }
     NSString *url = @(astrosession_fujinet_webui_url(_session));
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
@@ -292,6 +299,13 @@
 - (void)fujinetLog:(id)sender
 {
     (void)sender;
+    if (astrosession_fujinet_external(_session)) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"FujiNet is external";
+        alert.informativeText = @"Its console output is in the process that is running it.";
+        [alert runModal];
+        return;
+    }
     NSWindow *w = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, 700, 500)
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |

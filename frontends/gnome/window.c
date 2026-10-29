@@ -360,6 +360,10 @@ static void action_fujinet_config(GSimpleAction *a, GVariant *p, gpointer user_d
     AstroWindow *self = ASTRO_WINDOW(user_data);
     GtkUriLauncher *launcher;
     (void)a; (void)p;
+    if (astrosession_fujinet_external(self->session)) {
+        astro_window_toast(self, "FujiNet is external: use its own web UI");
+        return;
+    }
     /* Always the system browser -- the config pages' OAuth/JS need a real
      * browser, and there is no embedded webview. */
     launcher = gtk_uri_launcher_new(astrosession_fujinet_webui_url(self->session));
@@ -385,6 +389,10 @@ static void action_fujinet_log(GSimpleAction *a, GVariant *p, gpointer user_data
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)a; (void)p;
+    if (astrosession_fujinet_external(self->session)) {
+        astro_window_toast(self, "FujiNet is external: see its own console");
+        return;
+    }
 
     GtkWidget *dialog = gtk_window_new();
     gtk_window_set_title(GTK_WINDOW(dialog), "FujiNet Console Log");

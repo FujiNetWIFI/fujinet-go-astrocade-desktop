@@ -95,6 +95,10 @@ typedef struct {
                             * loaded into the FujiNet cart device. Not read
                             * from settings by astrosession_default_opts;
                             * callers persisting a "last cart" set it. */
+    int external_fujinet;   /* 1: don't start the built-in FujiNet; dial the
+                             * one listening at boip_connect instead */
+    const char *boip_connect; /* "host:port" of that FujiNet (external only);
+                               * NULL/"" = 127.0.0.1:11500 */
 } astrosession_start_opts;
 
 /* Fills *opts from the settings store: bios from "bios" (default ASTRO), exp
@@ -148,10 +152,18 @@ const char *astrosession_last_error(const astrosession *s);
 int astrosession_load_cart(astrosession *s, const char *path);
 const char *astrosession_cart_path(astrosession *s);
 
+/* Parses the "Use external FujiNet" address field: "host:port" (host a name
+ * or an IPv4 literal) or a bare "port". Empty text means the default,
+ * 127.0.0.1:11500. Returns 0 and fills host/port, or -1 when the text is not
+ * an address:port (nothing is written then). */
+int astrosession_parse_hostport(const char *text, char *host, int hostsz,
+                                int *port);
+
 /* The FujiNet web admin UI URL ("http://127.0.0.1:11501/"). A frontend opens
  * this in the system browser (never an embedded webview -- the config pages'
  * OAuth/JS flows need a real browser). Valid whether or not the runtime is up;
- * the page simply won't load until FujiNet is listening. */
+ * the page simply won't load until FujiNet is listening. Empty while the
+ * session uses an external FujiNet (that one has its own web UI). */
 const char *astrosession_fujinet_webui_url(astrosession *s);
 
 /* Copy the FujiNet runtime's recent console log into dst (for a log viewer).
@@ -160,6 +172,11 @@ int astrosession_fujinet_copy_log(astrosession *s, char *dst, int max);
 
 /* 1 when this app's FujiNet runtime is up. */
 int astrosession_fujinet_running(const astrosession *s);
+/* 1 when the session was started to dial an external FujiNet. */
+int astrosession_fujinet_external(const astrosession *s);
+/* "host:port" the cartridge dials (the running session's, or the default
+ * 127.0.0.1:11500 before the first start). */
+const char *astrosession_boip_endpoint(const astrosession *s);
 /* 1 when the FujiNet cartridge's BoIP link is connected. */
 int astrosession_fujinet_link(const astrosession *s);
 

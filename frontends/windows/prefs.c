@@ -5,6 +5,8 @@
  *  Machine -- the System ROM (BIOS variant; one not imported says so) and the
  *      RAM expansion. They apply to the settings store at once and the
  *      machine restarts once when the window closes.
+ *      A FujiNet box beneath: Use external FujiNet and its address:port. The
+ *      address is checked when the window closes; a bad one keeps it open.
  *  ROMs -- what fujinet-go-msdos-desktop's ROMs page is: a note on where the
  *      BIOS comes from and where it is kept, Import... and Import a
  *      Folder..., and a list of each BIOS, imported or not.
@@ -23,11 +25,16 @@
 #include "resource.h"
 #include "win_common.h"
 
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER 0x1501
+#endif
+
 #define PREFS_CLASS "AstroPrefs"
 #define PREFS_STYLE (WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN)
 
 enum {
     ID_TABS = 100, ID_BIOS, ID_EXP, ID_ROM_FILES, ID_ROM_FOLDER, ID_ROM_LIST, ID_CLOSE,
+    ID_EXTERNAL, ID_EXT_ADDR,
 };
 enum { PAGE_MACHINE, PAGE_ROMS };
 
@@ -38,6 +45,7 @@ enum { PAGE_MACHINE, PAGE_ROMS };
 
 static HWND g_win, g_tabs, g_close;
 static HWND g_bios_label, g_bios, g_exp_label, g_exp, g_machine_note;
+static HWND g_ext_check, g_ext_label, g_ext_addr, g_ext_note;
 static HWND g_rom_note, g_rom_path, g_rom_files, g_rom_folder, g_rom_list;
 static HFONT g_font;
 static astrosession *g_session;
@@ -87,7 +95,8 @@ static void refresh_roms(void)
 
 static void show_page(int page)
 {
-    HWND machine[] = { g_bios_label, g_bios, g_exp_label, g_exp, g_machine_note };
+    HWND machine[] = { g_bios_label, g_bios, g_exp_label, g_exp, g_machine_note,
+                       g_ext_check, g_ext_label, g_ext_addr, g_ext_note };
     HWND roms[] = { g_rom_note, g_rom_path, g_rom_files, g_rom_folder, g_rom_list };
     g_page = page;
     for (size_t i = 0; i < sizeof machine / sizeof machine[0]; i++)
@@ -117,6 +126,10 @@ static void layout(void)
         MoveWindow(g_exp_label, px, y + S(40), S(120), S(20), TRUE);
         MoveWindow(g_exp, px + S(124), y + S(36), pw - S(124), S(300), TRUE);
         MoveWindow(g_machine_note, px, y + S(80), pw, S(20), TRUE);
+        MoveWindow(g_ext_check, px, y + S(124), pw, S(22), TRUE);
+        MoveWindow(g_ext_label, px, y + S(154), S(120), S(20), TRUE);
+        MoveWindow(g_ext_addr, px + S(124), y + S(150), pw - S(124), S(24), TRUE);
+        MoveWindow(g_ext_note, px, y + S(184), pw, S(40), TRUE);
 
         /* ROMs */
         MoveWindow(g_rom_note, px, y, pw, S(48), TRUE);
@@ -181,6 +194,9 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
             }
             return 0;
+        case ID_EXTERNAL:
+            EnableWindow(g_ext_addr, SendMessageW(g_ext_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            return 0;
         case ID_ROM_FILES:  import_roms(0); return 0;
         case ID_ROM_FOLDER: import_roms(1); return 0;
         case ID_CLOSE:
@@ -206,7 +222,36 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         layout();
         return 0;
     case WM_CLOSE: {
-        const int dirty = g_dirty;
+        char addr[96], host[64];
+        const int external = SendMessageW(g_ext_check, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        int port, dirty;
+
+        GetWindowTextA(g_ext_addr, addr, sizeof addr);
+        if (external && astrosession_parse_hostport(addr, host, sizeof host, &port) != 0) {
+            astro_message(hwnd, "That is not an address:port.\n\nExample: 127.0.0.1:11500",
+                          "External FujiNet", MB_OK | MB_ICONWARNING);
+            SendMessageW(g_tabs, TCM_SETCURSEL, PAGE_MACHINE, 0);
+            show_page(PAGE_MACHINE);
+            SetFocus(g_ext_addr);
+            return 0;
+        }
+        if (external != (astrosession_get_int(g_session, "fujinet_external", 0) != 0)) {
+            astrosession_set_int(g_session, "fujinet_external", external);
+            g_dirty = 1;
+        }
+        {
+            /* trimmed, so what is saved is what the parser read */
+            char *text = addr;
+            size_t len;
+            while (*text == ' ' || *text == '\t') text++;
+            len = strlen(text);
+            while (len && (text[len - 1] == ' ' || text[len - 1] == '\t')) text[--len] = '\0';
+            if (strcmp(text, astrosession_get_str(g_session, "fujinet_external_addr", "")) != 0) {
+                astrosession_set_str(g_session, "fujinet_external_addr", text);
+                g_dirty = 1;
+            }
+        }
+        dirty = g_dirty;
         astrosession_settings_flush(g_session);
         DestroyWindow(hwnd);
         if (g_hooks.closed)
@@ -274,6 +319,20 @@ void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hook
                           0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_EXP, inst, NULL);
     g_machine_note = CreateWindowW(L"STATIC", L"Changes take effect when the machine restarts.",
                                    WS_CHILD, 0, 0, 1, 1, g_win, NULL, inst, NULL);
+    g_ext_check = CreateWindowW(L"BUTTON", L"Use external FujiNet",
+                                WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 1, 1, g_win,
+                                (HMENU)(INT_PTR)ID_EXTERNAL, inst, NULL);
+    g_ext_label = CreateWindowW(L"STATIC", L"Address:port", WS_CHILD, 0, 0, 1, 1, g_win, NULL, inst, NULL);
+    g_ext_addr = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL,
+                                 0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_EXT_ADDR, inst, NULL);
+    SendMessageW(g_ext_addr, EM_SETCUEBANNER, FALSE, (LPARAM)L"127.0.0.1:11500");
+    astro_set_text_utf8(g_ext_addr, astrosession_get_str(session, "fujinet_external_addr", ""));
+    SendMessageW(g_ext_check, BM_SETCHECK,
+                 astrosession_get_int(session, "fujinet_external", 0) ? BST_CHECKED : BST_UNCHECKED, 0);
+    EnableWindow(g_ext_addr, astrosession_get_int(session, "fujinet_external", 0) != 0);
+    g_ext_note = CreateWindowW(L"STATIC",
+        L"Skips the built-in FujiNet and connects to another instance: its [BOIP] "
+        L"listener's host and port.", WS_CHILD | SS_LEFT, 0, 0, 1, 1, g_win, NULL, inst, NULL);
     g_rom_note = CreateWindowW(L"STATIC",
         L"The console's BIOS ROM is not part of the app. Import it from a file, a zip or a "
         L"folder (MAME's astrocde set works); it is recognised by its checksum. Kept in:",

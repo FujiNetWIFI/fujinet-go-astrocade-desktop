@@ -3,7 +3,8 @@
  * (no .ui file). Two machine options, both "restart to apply": the BIOS
  * variant and the RAM expansion. Changing either persists to the shared
  * settings store immediately and the dialog restarts the session once on
- * close if anything changed. The ROMs page lists each BIOS as imported or
+ * close if anything changed. A FujiNet group chooses the built-in FujiNet or
+ * an external one at host:port. The ROMs page lists each BIOS as imported or
  * not, with the same import the Machine menu has.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -23,6 +24,7 @@ typedef struct {
     gboolean dirty;
     gboolean syncing;            /* a refresh, not the user, is moving a combo */
     AdwComboRow *bios_row;
+    GtkWidget *addr_row;
     GtkWidget *rom_rows[MAX_ROM_ROWS];
 } PrefsState;
 
@@ -106,6 +108,41 @@ static AdwComboRow *add_combo(AdwPreferencesGroup *group, const char *title,
                           binding_new_(state, key, def), binding_free, 0);
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return row;
+}
+
+#define EXTERNAL_PLACEHOLDER "127.0.0.1:11500"
+
+/* The address field: valid text (or none, meaning 127.0.0.1:11500) is saved
+ * and marks the machine dirty; anything else is flagged and not saved. */
+static void addr_changed(GtkEditable *entry, gpointer user_data)
+{
+    PrefsState *state = user_data;
+    const char *text = gtk_editable_get_text(entry);
+    char host[64];
+    int port;
+
+    if (astrosession_parse_hostport(text, host, sizeof host, &port) != 0) {
+        gtk_widget_add_css_class(GTK_WIDGET(entry), "error");
+        return;
+    }
+    gtk_widget_remove_css_class(GTK_WIDGET(entry), "error");
+    if (g_strcmp0(astrosession_get_str(state->session, "fujinet_external_addr", ""), text) == 0)
+        return;
+    astrosession_set_str(state->session, "fujinet_external_addr", text);
+    state->dirty = TRUE;
+}
+
+static void external_toggled(GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+    PrefsState *state = user_data;
+    int active = adw_switch_row_get_active(ADW_SWITCH_ROW(row));
+    (void)pspec;
+
+    gtk_widget_set_sensitive(state->addr_row, active);
+    if (astrosession_get_int(state->session, "fujinet_external", 0) == active)
+        return;
+    astrosession_set_int(state->session, "fujinet_external", active);
+    state->dirty = TRUE;
 }
 
 /* After an import: the ROMs rows' states and the BIOS choices' labels. */
@@ -246,6 +283,30 @@ void astro_prefs_show(AstroWindow *window, astrosession *session)
               gtk_string_list_new(exp_table()), state, "exp", ASTROSESSION_EXP_NONE);
 
     adw_preferences_page_add(page, group);
+
+    AdwPreferencesGroup *fujinet =
+        ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+    adw_preferences_group_set_title(fujinet, "FujiNet");
+    adw_preferences_group_set_description(
+        fujinet, "Skip the built-in FujiNet and connect to another instance "
+                 "instead: its [BOIP] listener's host and port.");
+    GtkWidget *external = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(external), "Use external FujiNet");
+    adw_switch_row_set_active(ADW_SWITCH_ROW(external),
+                              astrosession_get_int(session, "fujinet_external", 0) != 0);
+    state->addr_row = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(state->addr_row),
+                                  "Address:port, e.g. " EXTERNAL_PLACEHOLDER);
+    gtk_editable_set_text(GTK_EDITABLE(state->addr_row),
+                          astrosession_get_str(session, "fujinet_external_addr", ""));
+    g_signal_connect(state->addr_row, "changed", G_CALLBACK(addr_changed), state);
+    gtk_widget_set_sensitive(state->addr_row,
+                             adw_switch_row_get_active(ADW_SWITCH_ROW(external)));
+    g_signal_connect(external, "notify::active", G_CALLBACK(external_toggled), state);
+    adw_preferences_group_add(fujinet, external);
+    adw_preferences_group_add(fujinet, state->addr_row);
+    adw_preferences_page_add(page, fujinet);
+
     adw_preferences_dialog_add(dialog, page);
     adw_preferences_dialog_add(dialog, build_roms_page(state));
     refresh_rows(state);

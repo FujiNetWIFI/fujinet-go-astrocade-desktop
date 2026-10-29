@@ -98,6 +98,77 @@ void astrosession_default_opts(astrosession *s, astrosession_start_opts *opts)
     opts->exp = astrosession_get_int(s, "exp", ASTROSESSION_EXP_NONE);
     const char *cart = astrosession_get_str(s, "cart", "");
     opts->cart_path = (cart && *cart) ? cart : NULL;
+    opts->external_fujinet = astrosession_get_int(s, "fujinet_external", 0);
+    opts->boip_connect = astrosession_get_str(s, "fujinet_external_addr", NULL);
+}
+
+int astrosession_parse_hostport(const char *text, char *host, int hostsz,
+                                int *port)
+{
+    char buf[80], *colon, *end;
+    const char *name = "127.0.0.1", *digits;
+    long num = ASTROSESSION_BOIP_PORT;
+    size_t len;
+
+    if (!text) text = "";
+    while (*text == ' ' || *text == '\t') text++;
+    len = strlen(text);
+    while (len && (text[len - 1] == ' ' || text[len - 1] == '\t' ||
+                   text[len - 1] == '\n' || text[len - 1] == '\r'))
+        len--;
+    if (len >= sizeof buf) return -1;
+    memcpy(buf, text, len);
+    buf[len] = '\0';
+
+    if (len) {
+        colon = strrchr(buf, ':');
+        if (colon) {
+            *colon = '\0';
+            name = buf;
+            if (!*name) return -1;
+            digits = colon + 1;
+        } else {
+            digits = buf;
+        }
+        if (!*digits) return -1;
+        num = strtol(digits, &end, 10);
+        if (*end || num < 1 || num > 65535) return -1;
+        if (colon) {
+            /* A host name or an IPv4 literal: letters, digits, '.', '-', '_'.
+             * Digits and dots alone must be a full dotted quad. */
+            const char *ch;
+            int numeric = 1, octet[4], used = 0, idx;
+            if (name[0] == '-' || name[0] == '.') return -1;
+            for (ch = name; *ch; ch++) {
+                if ((*ch >= '0' && *ch <= '9') || *ch == '.') continue;
+                numeric = 0;
+                if (!((*ch >= 'a' && *ch <= 'z') || (*ch >= 'A' && *ch <= 'Z') ||
+                      *ch == '-' || *ch == '_'))
+                    return -1;
+            }
+            if (numeric) {
+                if (sscanf(name, "%d.%d.%d.%d%n", &octet[0], &octet[1],
+                           &octet[2], &octet[3], &used) != 4 || name[used])
+                    return -1;
+                for (idx = 0; idx < 4; idx++)
+                    if (octet[idx] < 0 || octet[idx] > 255) return -1;
+            }
+        }
+    }
+    if ((int)strlen(name) >= hostsz) return -1;
+    memcpy(host, name, strlen(name) + 1);
+    *port = (int)num;
+    return 0;
+}
+
+int astrosession_fujinet_external(const astrosession *s)
+{
+    return s->fujinet_external;
+}
+
+const char *astrosession_boip_endpoint(const astrosession *s)
+{
+    return s->boip_hostport;
 }
 
 int astrosession_has_system_roms(const astrosession *s)
@@ -169,9 +240,27 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
 
     /* Bring FujiNet up first (best-effort) and wait briefly for its BoIP
      * listener, so the emulator's first cart dial-out finds it. A failure is
-     * non-fatal: the mailbox runs link-down and the CONFIG client says so. */
-    if (fujinet_start(s) == 0)
+     * non-fatal: the mailbox runs link-down and the CONFIG client says so.
+     * An external FujiNet is somebody else's: just dial its address. */
+    s->fujinet_external = 0;
+    snprintf(s->boip_hostport, sizeof s->boip_hostport, "127.0.0.1:%d",
+             ASTROSESSION_BOIP_PORT);
+    if (opts->external_fujinet) {
+        char host[64];
+        int port;
+        if (astrosession_parse_hostport(opts->boip_connect, host, sizeof host,
+                                        &port) != 0) {
+            session_set_error(s, "\"%s\" is not an address:port for the "
+                              "external FujiNet (example: 127.0.0.1:11500)",
+                              opts->boip_connect ? opts->boip_connect : "");
+            free(cart);
+            return -1;
+        }
+        s->fujinet_external = 1;
+        snprintf(s->boip_hostport, sizeof s->boip_hostport, "%s:%d", host, port);
+    } else if (fujinet_start(s) == 0) {
         fujinet_wait_for_boip(s, 3000);
+    }
 
     /* The debugger's FujiNet trace is always on: it is cheap, and it is most
      * useful about what happened before anyone thought to look. */
@@ -205,6 +294,7 @@ void astrosession_stop(astrosession *s)
     audio_stop(s);
     astro_host_stop();
     fujinet_stop(s);
+    s->fujinet_external = 0;
     s->running = 0;
 }
 
@@ -228,8 +318,9 @@ const char *astrosession_cart_path(astrosession *s)
 
 const char *astrosession_fujinet_webui_url(astrosession *s)
 {
-    (void)s;
     static const char url[] = "http://127.0.0.1:11501/";
+    if (s->fujinet_external)
+        return "";
     /* ASTROSESSION_WEBUI_PORT is 11501; kept as a literal so the string is
      * constant, with a compile-time check that they agree. */
     _Static_assert(ASTROSESSION_WEBUI_PORT == 11501, "webui url/port mismatch");
