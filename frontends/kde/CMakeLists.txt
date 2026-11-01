@@ -6,7 +6,8 @@
 # runs CXX compile checks, so enable C++ here, scoped to this frontend.
 enable_language(CXX)
 
-find_package(Qt6 6.4 COMPONENTS Widgets QUIET)
+# Qt 6.7 for QRhiWidget (the GPU display); ShaderTools bakes its shaders.
+find_package(Qt6 6.7 COMPONENTS Widgets GuiPrivate ShaderTools QUIET)
 
 if(NOT Qt6_FOUND)
   message(STATUS "KDE frontend: Qt6 Widgets not found -- skipping")
@@ -19,6 +20,8 @@ set(KDE_SOURCES
   main.cpp
   MainWindow.cpp
   DisplayWidget.cpp
+  SoftDisplayWidget.cpp
+  FrameFeed.cpp
   KeypadWindow.cpp
   SettingsDialog.cpp
   DebuggerWindow.cpp
@@ -29,7 +32,12 @@ set(KDE_APP_ID online.fujinet.go.astrocade.kde)
 add_executable(fujinet-go-astrocade-kde ${KDE_SOURCES})
 set_target_properties(fujinet-go-astrocade-kde PROPERTIES CXX_STANDARD 17)
 target_link_libraries(fujinet-go-astrocade-kde PRIVATE
-                      astro_session astro_core Qt6::Widgets m)
+                      astro_session astro_core Qt6::Widgets Qt6::GuiPrivate m)
+# The display's shaders, baked for every backend and embedded as resources.
+# PREFIX "/" puts them at :/shaders/display.*.qsb ("/shaders" would nest it).
+qt_add_shaders(fujinet-go-astrocade-kde "display_shaders"
+  PREFIX "/"
+  FILES shaders/display.vert shaders/display.frag)
 target_include_directories(fujinet-go-astrocade-kde PRIVATE
                            "${CMAKE_CURRENT_SOURCE_DIR}"
                            "${CMAKE_SOURCE_DIR}/core/src")

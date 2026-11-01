@@ -11,6 +11,7 @@
 
 #include "DebuggerWindow.h"
 #include "DisplayWidget.h"
+#include "SoftDisplayWidget.h"
 #include "KeyForward.h"
 #include "KeypadWindow.h"
 #include "SettingsDialog.h"
@@ -43,15 +44,19 @@ MainWindow::MainWindow(astrosession *session, QWidget *parent)
 {
     setWindowTitle("FujiNet Go Astrocade");
     resize(800, 650);
-    m_display = new DisplayWidget(session, this);
+    auto *gpu = new DisplayWidget(session, this);
+    m_display = gpu;
+    /* No usable GPU device: fall back to painting in software */
+    connect(gpu, &QRhiWidget::renderFailed, this, &MainWindow::useSoftwareDisplay,
+            Qt::QueuedConnection);
     m_noBios = buildNoBiosPage();
     m_stack = new QStackedWidget(this);
-    m_stack->addWidget(m_display);
+    m_stack->addWidget(gpu);
     m_stack->addWidget(m_noBios);
     setCentralWidget(m_stack);
     buildMenus();
     showPage();
-    m_display->setFocus();
+    m_display->widget()->setFocus();
     m_sysactTimer = startTimer(100);
 
     /* developer affordances, matching the GNOME/Win32 ports */
@@ -139,13 +144,30 @@ QWidget *MainWindow::buildNoBiosPage()
     return page;
 }
 
+void MainWindow::useSoftwareDisplay()
+{
+    if (dynamic_cast<SoftDisplayWidget *>(m_display))
+        return;
+    QWidget *old = m_display->widget();
+    auto *soft = new SoftDisplayWidget(m_session, this);
+    const bool shown = m_stack->currentWidget() == old;
+    m_stack->removeWidget(old);
+    m_display = soft;
+    m_stack->insertWidget(0, soft);
+    delete old;   /* stops its feed */
+    if (shown) {
+        m_stack->setCurrentWidget(soft);
+        soft->setFocus();
+    }
+}
+
 /* The picture while there is a BIOS to boot, else the No-BIOS page. */
 void MainWindow::showPage()
 {
     const bool bios = astrosession_has_system_roms(m_session) != 0;
-    m_stack->setCurrentWidget(bios ? static_cast<QWidget *>(m_display) : m_noBios);
+    m_stack->setCurrentWidget(bios ? m_display->widget() : m_noBios);
     if (bios)
-        m_display->setFocus();
+        m_display->widget()->setFocus();
 }
 
 /* Starts the machine once a BIOS is there to boot (after an import). */
@@ -264,7 +286,9 @@ void MainWindow::showFujinetLog()
     auto refresh = [this, view] {
         char buf[16384];
         astrosession_fujinet_copy_log(m_session, buf, sizeof buf);
-        view->setPlainText(buf);
+        const QString text = QString::fromUtf8(buf);
+        if (view->toPlainText() != text)   /* unchanged: keep selection and scroll */
+            view->setPlainText(text);
     };
     refresh();
     auto *timer = new QTimer(dlg);

@@ -381,7 +381,13 @@ static gboolean log_refresh(gpointer text_view)
     char buf[16384];
     astrosession_fujinet_copy_log(self->session, buf, sizeof buf);
     GtkTextBuffer *tbuf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
-    gtk_text_buffer_set_text(tbuf, buf, -1);
+    GtkTextIter si, ei;
+    gtk_text_buffer_get_bounds(tbuf, &si, &ei);
+    char *old = gtk_text_buffer_get_text(tbuf, &si, &ei, FALSE);
+    gboolean same = strcmp(old, buf) == 0;
+    g_free(old);
+    if (!same)   /* unchanged log: leave the buffer (and any selection) be */
+        gtk_text_buffer_set_text(tbuf, buf, -1);
     return G_SOURCE_CONTINUE;
 }
 

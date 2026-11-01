@@ -21,6 +21,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QTabWidget;
+class QTimer;
 
 class DebuggerWindow : public QWidget {
     Q_OBJECT
@@ -30,6 +31,10 @@ public:
 
 private slots:
     void tick();
+
+protected:
+    void showEvent(QShowEvent *) override;
+    void hideEvent(QHideEvent *) override;
 
 private:
     void refreshCpu();
@@ -57,6 +62,10 @@ private:
     int m_fujiCount = -1;
     std::uint64_t m_fujiLast = 0;
     int m_fujiTicks = 0;
+
+    QTimer *m_timer = nullptr;
+    astrovid_snapshot m_lastSnap;   /* what the Video tab last drew */
+    bool m_haveSnap = false;
 
     std::uint32_t m_scratch[ASTROVID_MAX_PIXELS];
 };

@@ -103,19 +103,20 @@ int main(int argc, char **argv)
     uint64_t serial = 0;
     struct timespec t0, t1;
 
-    /* Let the thread warm up, then count frame serials over three seconds:
+    /* Let the thread warm up, then count the machine's frames (the serial skips repeats) over three seconds:
      * the serial is sampled at frame granularity, so a 1 s window carries a
      * built-in +-1 fps boundary error -- 3 s brings that under +-0.4. */
     usleep(200 * 1000);
     astro_host_frame_copy(fb, &serial);
-    uint64_t s0 = serial;
+    uint64_t s0 = astro_host_frame_count();
     clock_gettime(CLOCK_MONOTONIC, &t0);
     usleep(3000 * 1000);
+    uint64_t s1 = astro_host_frame_count();
     astro_host_frame_copy(fb, &serial);
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-    double fps = (double)(serial - s0) / secs;
+    double fps = (double)(s1 - s0) / secs;
     fprintf(stderr, "boot_smoke: host pacing %.2f fps\n", fps);
     astro_host_stop();
 

@@ -12,7 +12,7 @@ extern "C" {
 #include "astrosession.h"
 }
 
-class DisplayWidget;
+class DisplayView;
 class KeypadWindow;
 class DebuggerWindow;
 class QStackedWidget;
@@ -39,11 +39,12 @@ private:
     void showSettings();
     void showToast(const QString &msg);
     void showFujinetLog();
+    void useSoftwareDisplay();
 
     astrosession *m_session;
     QStackedWidget *m_stack = nullptr;
     QWidget *m_noBios = nullptr;
-    DisplayWidget *m_display = nullptr;
+    DisplayView *m_display = nullptr;
     KeypadWindow *m_keypad = nullptr;
     DebuggerWindow *m_debugger = nullptr;
     bool m_sysactDown[ASTROSESSION_SYSACT_COUNT] = {};

@@ -25,6 +25,7 @@
 
 #include "astrodebug.h"
 #include "astrovid.h"
+#include <string.h>
 
 #define DISASM_LINES 24
 #define MEM_ROWS 16
@@ -57,6 +58,9 @@ typedef struct {
     int fuji_count;
     uint64_t fuji_last;
     int fuji_ticks;
+
+    astrovid_snapshot last_snap;   /* what the Video tab last drew */
+    gboolean have_snap;
 
     uint16_t mem_addr;
     uint32_t scratch[ASTROVID_MAX_PIXELS];  /* MAX of every Video render */
@@ -139,6 +143,22 @@ static void set_text_at(GtkTextView *view, const char *text, gboolean follow)
     if (!follow && adj && gtk_adjustment_get_value(adj) > 0.0) {
         gtk_text_view_get_line_at_y(view, &it, (int)gtk_adjustment_get_value(adj), NULL);
         top = gtk_text_iter_get_line(&it);
+    }
+    {
+        GtkTextIter si, ei;
+        char *old;
+        gboolean same;
+
+        /* unchanged text is not set again: it would reset the selection and
+         * relayout for nothing */
+        gtk_text_buffer_get_bounds(b, &si, &ei);
+        old = gtk_text_buffer_get_text(b, &si, &ei, FALSE);
+        same = strcmp(old, clean) == 0;
+        g_free(old);
+        if (same) {
+            g_free(clean);
+            return;
+        }
     }
     gtk_text_buffer_set_text(b, clean, -1);
     g_free(clean);
@@ -244,6 +264,13 @@ static void refresh_video(DbgWindow *d)
     astrovid_snapshot_get(&snap);
     int w, h;
 
+    /* the snapshot is zeroed before it is filled, so a byte compare is exact;
+     * an unchanged chip means the three textures would come out the same */
+    if (d->have_snap && memcmp(&snap, &d->last_snap, sizeof snap) == 0)
+        return;
+    d->last_snap = snap;
+    d->have_snap = TRUE;
+
     astrovid_render_screen(&snap, d->scratch, &w, &h);
     set_picture(d->screen_pic, texture_from_scratch(d, w, h));
 
@@ -309,8 +336,13 @@ static void refresh_fujinet(DbgWindow *d, gboolean force)
 static gboolean poll_tick(gpointer user_data)
 {
     DbgWindow *d = user_data;
-    /* the Video tab is live even while running; the CPU tab needs a pause */
-    refresh_video(d);
+    /* nothing to show while the window is not on screen */
+    if (!gtk_widget_get_mapped(GTK_WIDGET(d->win)))
+        return G_SOURCE_CONTINUE;
+    /* the Video tab is live even while running (and redraws only when the
+     * chip's state changed); the CPU tab needs a pause */
+    if (gtk_notebook_get_current_page(d->notebook) == PAGE_VIDEO)
+        refresh_video(d);
     uint64_t s = astrodebug_stop_serial(d->dbg);
     /* FujiNet: on a stop, and twice a second while running */
     if (gtk_notebook_get_current_page(d->notebook) == PAGE_FUJINET &&
@@ -360,6 +392,11 @@ static void on_switch_page(GtkNotebook *nb, GtkWidget *page, guint num, gpointer
     (void)nb; (void)page;
     if (num == PAGE_FUJINET)
         refresh_fujinet(u, FALSE);
+    else if (num == PAGE_VIDEO) {
+        DbgWindow *d = u;
+        d->have_snap = FALSE;
+        refresh_video(d);
+    }
 }
 
 static void on_bp_addr(GtkEntry *e, gpointer u)

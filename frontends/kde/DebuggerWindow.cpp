@@ -198,14 +198,30 @@ DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
     tabs->addTab(fuji, "FujiNet");
     connect(tabs, &QTabWidget::currentChanged, this, [this](int page) {
         if (page == PageFujinet) refreshFujinet(false);
+        if (page == PageVideo) { m_haveSnap = false; refreshVideo(); }
     });
     m_tabs = tabs;
 
     outer->addWidget(tabs);
 
-    auto *timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, &DebuggerWindow::tick);
-    timer->start(100);
+    /* runs only while the window is shown (see showEvent/hideEvent): the
+     * object outlives its window, and a hidden debugger redraws nothing */
+    m_timer = new QTimer(this);
+    connect(m_timer, &QTimer::timeout, this, &DebuggerWindow::tick);
+}
+
+void DebuggerWindow::showEvent(QShowEvent *e)
+{
+    QWidget::showEvent(e);
+    m_haveSnap = false;
+    m_timer->start(100);
+    tick();
+}
+
+void DebuggerWindow::hideEvent(QHideEvent *e)
+{
+    QWidget::hideEvent(e);
+    m_timer->stop();
 }
 
 DebuggerWindow::~DebuggerWindow()
@@ -225,6 +241,13 @@ void DebuggerWindow::refreshVideo()
     astrovid_snapshot snap;
     astrovid_snapshot_get(&snap);
     int w, h;
+
+    /* the snapshot is zeroed before it is filled, so a byte compare is exact;
+     * an unchanged chip means the three pixmaps would come out the same */
+    if (m_haveSnap && std::memcmp(&snap, &m_lastSnap, sizeof snap) == 0)
+        return;
+    m_lastSnap = snap;
+    m_haveSnap = true;
 
     astrovid_render_screen(&snap, m_scratch, &w, &h);
     m_screen->setPixmap(pixFromScratch(m_scratch, w, h));
@@ -342,7 +365,8 @@ void DebuggerWindow::refreshFujinet(bool force)
 
 void DebuggerWindow::tick()
 {
-    refreshVideo();
+    if (m_tabs->currentIndex() == PageVideo)
+        refreshVideo();
     std::uint64_t s = astrodebug_stop_serial(m_dbg);
     /* FujiNet: on a stop, and twice a second while running */
     if (m_tabs->currentIndex() == PageFujinet &&

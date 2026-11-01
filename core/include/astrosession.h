@@ -195,6 +195,18 @@ int astrosession_reset_game(astrosession *s);
 /* ---- video: latest-wins single slot ------------------------------------- */
 int astrosession_copy_frame(astrosession *s, uint32_t *dst,
                             uint64_t *serial_inout);
+/* Ask to be told when a new frame is ready, for a frontend with no frame
+ * clock of its own: cb(ctx) runs on the machine thread after each new frame
+ * is published. Keep it quick (post an event and return) and do not call into
+ * the session from it. NULL stops the calls and returns only after any call
+ * in flight has finished, so ctx may be freed right after. */
+typedef void (*astrosession_frame_cb)(void *ctx);
+void astrosession_set_frame_callback(astrosession *s, astrosession_frame_cb cb,
+                                     void *ctx);
+/* Frames the machine has run since it started, including those identical to
+ * their predecessor (not published again): "is the machine running", not
+ * "is the picture changing". */
+uint64_t astrosession_frame_count(astrosession *s);
 
 /* ---- audio: drained on demand, ASTROSESSION_AUDIO_RATE mono int16 -------- */
 int astrosession_render_audio(astrosession *s, int16_t *dst, int max_samples);

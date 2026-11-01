@@ -349,6 +349,19 @@ int astrosession_copy_frame(astrosession *s, uint32_t *dst, uint64_t *serial_ino
     return astro_host_frame_copy(dst, serial_inout);
 }
 
+void astrosession_set_frame_callback(astrosession *s, astrosession_frame_cb cb,
+                                     void *ctx)
+{
+    (void)s;
+    astro_host_set_frame_callback(cb, ctx);
+}
+
+uint64_t astrosession_frame_count(astrosession *s)
+{
+    (void)s;
+    return astro_host_frame_count();
+}
+
 int astrosession_render_audio(astrosession *s, int16_t *dst, int max_samples)
 {
     (void)s;

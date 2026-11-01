@@ -169,6 +169,7 @@ static void *poll_thread(void *arg)
     SDL_JoystickID logged_unrecognized[MAX_LOGGED_UNRECOGNIZED];
     int logged_unrecognized_count = 0;
 
+    int npads = 0;
     while (s_running) {
         SDL_UpdateGamepads();
         log_unrecognized_joysticks(logged_unrecognized, &logged_unrecognized_count);
@@ -189,8 +190,12 @@ static void *poll_thread(void *arg)
                 apply_pad(&slots[i], i);
         }
         SDL_free(ids);
+        npads = count;
 
-        SDL_Delay(8);   /* ~125 Hz */
+        /* ~60 Hz while a pad is attached; with none there is only hotplug to
+         * notice, which can wait a tenth of a second. (SDL_WaitEventTimeout
+         * is no help: SDL polls inside it at about 1 kHz.) */
+        SDL_Delay(npads > 0 ? 16 : 100);
     }
 
     for (int i = 0; i < MAX_PADS; i++)

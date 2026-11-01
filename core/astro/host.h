@@ -66,6 +66,19 @@ void astro_host_reset(void);
  * updates the serial when it copied. */
 int astro_host_frame_copy(uint32_t *dst, uint64_t *serial_inout);
 
+/* Called on the machine thread right after each new frame is published (a
+ * frame identical to its predecessor is not published again), so a frontend
+ * with no frame clock can draw when there is something to draw. Must be quick
+ * and must not call back into the host: it runs with a lock held, so
+ * astro_host_set_frame_callback(NULL, NULL) waits for a call in flight and the
+ * context may be freed once it returns. */
+typedef void (*astro_host_frame_cb)(void *ctx);
+void astro_host_set_frame_callback(astro_host_frame_cb cb, void *ctx);
+/* Frames the machine has run since start, including the ones identical to
+ * their predecessor (not published again): ask this "is the machine
+ * running", not the serial. */
+uint64_t astro_host_frame_count(void);
+
 /* ---- audio: 48 kHz mono int16 ring with self-correcting backlog ---- */
 int astro_host_audio_copy(int16_t *dst, int max_samples);
 void astro_host_audio_reset(void);
