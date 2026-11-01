@@ -32,18 +32,22 @@
 
 find_package(Git QUIET)
 
-# fujinet-firmware, branch astrocade-config-rom-refresh (21624d70a): master
+# fujinet-firmware, fork branch boip-idle-wait-on-astrocade-config (b14e3f8d7):
+# the previous pin (21624d70a, PR #1705's head) plus the BoIP idle-wait fix,
+# fujinet-firmware PR #2247 (idle wakeups ~1000/s -> ~100/s). TEMPORARY: the
+# pin returns to master when #2247 merges. The commit lives only on the fork,
+# hence the tschak909 URL. The old pin is: master
 # (which carries the merged pico/astrocade port, #1605, plus the later
 # fuji_store/flash-erase fixes) plus the refreshed baked CONFIG client from
 # fujinet-config astrocade/ -- FujiNetWIFI/fujinet-firmware PR #1705. Keep
-# that branch until the pin moves onto master: a plain clone only fetches
+# the fork branch until the pin moves onto master: a plain clone only fetches
 # branches, so this commit must stay reachable from one. Recorded in three
 # places -- here and in both flatpak manifests (build-aux/flatpak/*.yml) --
 # and a squash-merge leaves the pinned commit off master, so treat a failed
 # fetch of this exact hash as "the branch was deleted", not as a network
 # fault.
-set(FUJINET_COMMIT "21624d70a7d75e193b0e2e3e4537ccc626f81b52")
-set(FUJINET_URL "https://github.com/FujiNetWIFI/fujinet-firmware")
+set(FUJINET_COMMIT "b14e3f8d79185bf0a4d67b171a2e52c17cdfbaaa")
+set(FUJINET_URL "https://github.com/tschak909/fujinet-firmware")
 
 # astro_provide_dependency(NAME <n> PATH <p> SENTINEL <file> OVERRIDE <VAR>
 #                          RESULT <out>
