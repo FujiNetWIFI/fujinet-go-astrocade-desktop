@@ -45,6 +45,16 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.7.0" date="2026-11-05">
+      <description>
+        <p>
+          A Controllers window in every frontend: the console keypad and all four hand controllers, each with a stick, a trigger and a knob dial. Map any key, gamepad button or stick to any control, the knob included. Any USB or Bluetooth gamepad or joystick now attaches, even one the system has no mapping for, such as an Astro-daptor. Keys are read by physical key, so NumLock and Shift no longer matter.
+        </p>
+        <p>
+          A new debugger with the same tabs and keys as the other FujiNet Go consoles: execute, read, write and port breakpoints with conditions, editable registers, a console, symbols and an instruction trace. Preferences can import several BIOS files at once. Fixes a hang when the machine restarted while the debugger had it stopped.
+        </p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-01">
       <description>
         <p>
