@@ -1,6 +1,7 @@
 /*
- * KeyForward -- translate a Qt key event to an ASTROSESSION_KEYSYM_* value
- * (the session's own numbering, not raw Qt::Key). See astro_keymap.c.
+ * Qt key events to the session's keysym space, and the one key path every
+ * window that types on the Astrocade shares (the display and the Controllers
+ * window).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -9,32 +10,22 @@
 #define ASTRO_KDE_KEYFORWARD_H
 
 #include <QKeyEvent>
+#include <cstdint>
 
 extern "C" {
 #include "astrosession.h"
 }
 
-inline int astro_keysym_from_qt(const QKeyEvent *e)
-{
-    switch (e->key()) {
-    case Qt::Key_Up:        return ASTROSESSION_KEYSYM_UP;
-    case Qt::Key_Down:      return ASTROSESSION_KEYSYM_DOWN;
-    case Qt::Key_Left:      return ASTROSESSION_KEYSYM_LEFT;
-    case Qt::Key_Right:     return ASTROSESSION_KEYSYM_RIGHT;
-    case Qt::Key_Return:
-    case Qt::Key_Enter:     return ASTROSESSION_KEYSYM_RETURN;
-    case Qt::Key_Backspace: return ASTROSESSION_KEYSYM_BACKSPACE;
-    case Qt::Key_Escape:    return ASTROSESSION_KEYSYM_ESCAPE;
-    case Qt::Key_Space:     return ASTROSESSION_KEYSYM_SPACE;
-    default: break;
-    }
-    const QString t = e->text();
-    if (t.size() == 1) {
-        const ushort u = t[0].unicode();
-        if (u >= 0x20 && u < 0x7f)
-            return static_cast<int>(u);
-    }
-    return ASTROSESSION_KEYSYM_NONE;
-}
+class KeypadWindow;
+
+/* The key's keysym, or 0 when it has none: the PHYSICAL key through its evdev
+ * code (so Shift cannot turn 8 into '*', and NumLock cannot turn Keypad 8
+ * into Up), else Qt's own key code. */
+uint32_t astroKeysymFromQt(const QKeyEvent *event);
+
+/* Press or release: Map capture first (press only), then the bindings. True
+ * when the event was consumed. `keypad` may be null. */
+bool astroForwardKey(astrosession *session, KeypadWindow *keypad,
+                     QKeyEvent *event, bool down);
 
 #endif

@@ -17,7 +17,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <math.h>
+
 #include "bindings.h"
+#include "input.h"
 #include "gamecontrollerdb_embedded.h"
 #include "gamepad_sdl.h"
 
@@ -32,13 +35,25 @@ static const struct { int sdl; const char *name; } k_named[] = {
     { SDL_GAMEPAD_BUTTON_WEST, "X" },
     { SDL_GAMEPAD_BUTTON_NORTH, "Y" },
     { SDL_GAMEPAD_BUTTON_BACK, "Back" },
+    { SDL_GAMEPAD_BUTTON_GUIDE, "Guide" },
     { SDL_GAMEPAD_BUTTON_START, "Start" },
+    { SDL_GAMEPAD_BUTTON_LEFT_STICK, "L3" },
+    { SDL_GAMEPAD_BUTTON_RIGHT_STICK, "R3" },
     { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, "L1" },
     { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, "R1" },
     { SDL_GAMEPAD_BUTTON_DPAD_UP, "D-Up" },
     { SDL_GAMEPAD_BUTTON_DPAD_DOWN, "D-Down" },
     { SDL_GAMEPAD_BUTTON_DPAD_LEFT, "D-Left" },
     { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, "D-Right" },
+};
+static const char *const k_axis_name[ASTRO_PAD_AXIS_COUNT] = {
+    "Left Stick X", "Left Stick Y", "Right Stick X", "Right Stick Y",
+    "Left Trigger", "Right Trigger",
+};
+static const SDL_GamepadAxis k_axis_sdl[ASTRO_PAD_AXIS_COUNT] = {
+    SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX,
+    SDL_GAMEPAD_AXIS_RIGHTY, SDL_GAMEPAD_AXIS_LEFT_TRIGGER,
+    SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
 };
 
 static pthread_t s_thread;
@@ -48,82 +63,156 @@ static astrosession *s_session;
 /* Map-mode capture (guarded by the poll thread; simple flags suffice). */
 static volatile int s_capture_armed;
 static volatile int s_capture_have;
-static volatile int s_capture_button;
+static volatile int s_capture_id;
+
+/* the connected pads, for the Controllers window's list */
+static pthread_mutex_t s_info_mtx = PTHREAD_MUTEX_INITIALIZER;
+static char s_pad_name[MAX_PADS][64];
+static int  s_pad_count;
 
 /* per-pad edge state, so a held button fires its binding once */
 typedef struct {
     SDL_Gamepad *gp;
     SDL_JoystickID id;
     uint32_t btn_prev;   /* bitmask of buttons that were down last poll */
+    uint32_t axis_prev;  /* axes that were past the capture threshold */
 } pad_slot;
 
-const char *astro_gamepad_button_name(int sdl_button)
+int astrosession_pad_input_name(int id, char *dst, int dstsz)
 {
-    for (unsigned i = 0; i < sizeof k_named / sizeof k_named[0]; i++)
-        if (k_named[i].sdl == sdl_button)
-            return k_named[i].name;
-    return NULL;
+    const char *name = NULL;
+    if (!dst || dstsz <= 0) return 0;
+    if (id < 0) name = "";
+    else if (id >= ASTRO_PAD_AXIS_BASE && id < ASTRO_PAD_AXIS_BASE + ASTRO_PAD_AXIS_COUNT)
+        name = k_axis_name[id - ASTRO_PAD_AXIS_BASE];
+    else
+        for (unsigned i = 0; i < sizeof k_named / sizeof k_named[0]; i++)
+            if (k_named[i].sdl == id) { name = k_named[i].name; break; }
+    if (name) return snprintf(dst, (size_t)dstsz, "%s", name);
+    return snprintf(dst, (size_t)dstsz, "Button %d", id);
+}
+
+int astrosession_gamepad_count(astrosession *s)
+{
+    (void)s;
+    pthread_mutex_lock(&s_info_mtx);
+    const int n = s_pad_count;
+    pthread_mutex_unlock(&s_info_mtx);
+    return n;
+}
+
+int astrosession_gamepad_name(astrosession *s, int idx, char *dst, int dstsz)
+{
+    (void)s;
+    if (!dst || dstsz <= 0) return 0;
+    dst[0] = '\0';
+    pthread_mutex_lock(&s_info_mtx);
+    if (idx >= 0 && idx < s_pad_count)
+        snprintf(dst, (size_t)dstsz, "%s", s_pad_name[idx]);
+    pthread_mutex_unlock(&s_info_mtx);
+    return (int)strlen(dst);
+}
+
+/* What one pad input does, accumulated for the pad's source. */
+typedef struct {
+    uint32_t keys;
+    uint8_t hand, knobdir;
+} acc;
+
+static void apply_target(acc *a, int target, int down, int edge)
+{
+    if (target < 0 || !down) {
+        /* a system action fires on the press edge only */
+        return;
+    }
+    if (target >= ASTRO_TARGET_SYSACT && target < ASTRO_TARGET_PLAYERS) {
+        if (edge)
+            astrosession_sysaction_post(
+                s_session, (astrosession_sysaction)(target - ASTRO_TARGET_SYSACT));
+    } else if (target < ASTROSESSION_KEY_COUNT) {
+        a->keys |= 1u << target;
+    } else if (target < ASTRO_TARGET_COUNT) {
+        const int act = (target - ASTRO_TARGET_PLAYERS) % ASTRO_ACT_PER_PLAYER;
+        if (act <= ASTRO_ACT_TRIGGER) a->hand |= (uint8_t)(1u << act);
+        else if (act == ASTRO_ACT_KNOB_DEC) a->knobdir |= 1;
+        else if (act == ASTRO_ACT_KNOB_INC) a->knobdir |= 2;
+    }
+}
+
+static float axis_norm(SDL_Gamepad *gp, int a)
+{
+    float v = SDL_GetGamepadAxis(gp, k_axis_sdl[a]) / AXIS_MAX;
+    return v < -1.0f ? -1.0f : v > 1.0f ? 1.0f : v;
 }
 
 static void apply_pad(pad_slot *slot, int player)
 {
     SDL_Gamepad *gp = slot->gp;
+    acc a = { 0, 0, 0 };
 
-    /* ---- handle: D-pad OR left stick, plus the South button as trigger ---- */
+    /* ---- steering: the D-pad and the left stick always move the stick ---- */
     int up = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_UP);
     int down = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
     int left = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_LEFT);
     int right = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
-
-    float lx = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFTX) / AXIS_MAX;
-    float ly = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFTY) / AXIS_MAX;
+    const float lx = axis_norm(gp, 0), ly = axis_norm(gp, 1);
     if (ly < -STICK_DEADZONE) up = 1;
     if (ly > STICK_DEADZONE) down = 1;
     if (lx < -STICK_DEADZONE) left = 1;
     if (lx > STICK_DEADZONE) right = 1;
+    if (up) a.hand |= ASTROSESSION_HANDLE_UP;
+    if (down) a.hand |= ASTROSESSION_HANDLE_DOWN;
+    if (left) a.hand |= ASTROSESSION_HANDLE_LEFT;
+    if (right) a.hand |= ASTROSESSION_HANDLE_RIGHT;
 
-    uint8_t mask = 0;
-    if (up) mask |= ASTROSESSION_HANDLE_UP;
-    if (down) mask |= ASTROSESSION_HANDLE_DOWN;
-    if (left) mask |= ASTROSESSION_HANDLE_LEFT;
-    if (right) mask |= ASTROSESSION_HANDLE_RIGHT;
-    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_SOUTH))
-        mask |= ASTROSESSION_HANDLE_TRIGGER;
-    astrosession_handle_set(s_session, player, mask);
-
-    /* ---- knob (paddle): right stick X mapped to 0-255 absolute ---- */
-    float rx = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTX) / AXIS_MAX;
-    int knob = (int)((rx + 1.0f) * 127.5f);
-    if (knob < 0) knob = 0; else if (knob > 255) knob = 255;
-    astrosession_knob_set(s_session, player, (uint8_t)knob);
-
-    /* ---- buttons -> bindings ----
-     * A keypad key follows the button's level (held down for as long as the
-     * button is); a system action fires once on the press edge (posted, not
-     * fired, since this is the poll thread). Map-mode capture takes the first
-     * fresh press instead of injecting it. */
+    /* ---- buttons -> bindings ---- */
     uint32_t now = 0;
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; b++)
         if (SDL_GetGamepadButton(gp, (SDL_GamepadButton)b))
             now |= (1u << b);
     const uint32_t pressed = now & ~slot->btn_prev;   /* rising edges */
     slot->btn_prev = now;
-
     for (int b = 0; b < 32; b++) {
-        const int is_down = (now >> b) & 1;
-        const int is_edge = (pressed >> b) & 1;
-
+        const int is_down = (now >> b) & 1, is_edge = (pressed >> b) & 1;
         if (is_edge && s_capture_armed) {
-            s_capture_button = b;
+            s_capture_id = b;
             s_capture_have = 1;
             s_capture_armed = 0;
             continue;                     /* recorded for Map mode, not injected */
         }
-        astro_mapping m = bindings_resolve_button(b);
-        if (m.kind == ASTRO_MAP_KEY)
-            astrosession_keypad_set(s_session, (astrosession_key)m.value, is_down);
-        else if (m.kind == ASTRO_MAP_SYSACT && is_edge)
-            astrosession_sysaction_post(s_session, (astrosession_sysaction)m.value);
+        apply_target(&a, bindings_target_for_pad(player, b), is_down, is_edge);
+    }
+
+    /* ---- axes: a digital target fires at +50%; the knob follows one ---- */
+    uint32_t over = 0;
+    for (int ax = 0; ax < ASTRO_PAD_AXIS_COUNT; ax++) {
+        const float v = axis_norm(gp, ax);
+        const int id = ASTRO_PAD_AXIS_BASE + ax;
+        if (fabsf(v) > 0.6f) over |= 1u << ax;
+        if (s_capture_armed && ((over >> ax) & 1) && !((slot->axis_prev >> ax) & 1)) {
+            s_capture_id = id;
+            s_capture_have = 1;
+            s_capture_armed = 0;
+            continue;
+        }
+        const int t = bindings_target_for_pad(player, id);
+        if (t >= ASTRO_TARGET_PLAYERS &&
+            (t - ASTRO_TARGET_PLAYERS) % ASTRO_ACT_PER_PLAYER == ASTRO_ACT_KNOB)
+            continue;                     /* the knob axis, handled below */
+        const int is_down = v > 0.5f;
+        apply_target(&a, t, is_down, is_down && !((slot->axis_prev >> ax) & 1));
+    }
+    slot->axis_prev = over;
+
+    astro_input_pad_state(player, a.keys, player, a.hand, a.knobdir);
+
+    /* ---- the knob: an absolute axis (a trigger sweeps 0..1, a stick -1..1) */
+    const int kax = bindings_knob_axis(player);
+    if (kax >= 0) {
+        const int ax = kax - ASTRO_PAD_AXIS_BASE;
+        const float v = axis_norm(gp, ax);
+        const float u = (ax >= 4) ? v : (v + 1.0f) * 0.5f;
+        astro_input_pad_knob(player, player, (int)(u * 255.0f + 0.5f));
     }
 }
 
@@ -170,6 +259,7 @@ static void *poll_thread(void *arg)
     int logged_unrecognized_count = 0;
 
     int npads = 0;
+    Uint64 last_tick = 0;
     while (s_running) {
         SDL_UpdateGamepads();
         log_unrecognized_joysticks(logged_unrecognized, &logged_unrecognized_count);
@@ -181,8 +271,10 @@ static void *poll_thread(void *arg)
             SDL_JoystickID want = (i < count) ? ids[i] : 0;
             if (slots[i].id != want) {
                 if (slots[i].gp) { SDL_CloseGamepad(slots[i].gp); slots[i].gp = NULL; }
+                astro_input_pad_clear(i);
                 slots[i].id = want;
                 slots[i].btn_prev = 0;
+                slots[i].axis_prev = 0;
                 if (want)
                     slots[i].gp = SDL_OpenGamepad(want);
             }
@@ -191,16 +283,38 @@ static void *poll_thread(void *arg)
         }
         SDL_free(ids);
         npads = count;
+        pthread_mutex_lock(&s_info_mtx);
+        s_pad_count = 0;
+        for (int i = 0; i < MAX_PADS; i++)
+            if (slots[i].gp) {
+                const char *nm = SDL_GetGamepadName(slots[i].gp);
+                snprintf(s_pad_name[s_pad_count], sizeof s_pad_name[0], "%s",
+                         nm ? nm : "Gamepad");
+                s_pad_count++;
+            }
+        pthread_mutex_unlock(&s_info_mtx);
 
         /* ~60 Hz while a pad is attached; with none there is only hotplug to
          * notice, which can wait a tenth of a second. (SDL_WaitEventTimeout
          * is no help: SDL polls inside it at about 1 kHz.) */
-        SDL_Delay(npads > 0 ? 16 : 100);
+        const int fast = npads > 0 || astro_input_knob_active();
+        SDL_Delay(fast ? 16 : 100);
+        const Uint64 tnow = SDL_GetTicks();
+        if (last_tick) {
+            int dt = (int)(tnow - last_tick);
+            astro_input_tick(dt > 100 ? 100 : dt);
+        }
+        last_tick = tnow;
     }
 
-    for (int i = 0; i < MAX_PADS; i++)
+    for (int i = 0; i < MAX_PADS; i++) {
         if (slots[i].gp)
             SDL_CloseGamepad(slots[i].gp);
+        astro_input_pad_clear(i);
+    }
+    pthread_mutex_lock(&s_info_mtx);
+    s_pad_count = 0;
+    pthread_mutex_unlock(&s_info_mtx);
     return NULL;
 }
 
@@ -249,14 +363,14 @@ void astrosession_gamepad_capture_begin(astrosession *s)
     s_capture_armed = 1;
 }
 
-int astrosession_gamepad_capture_poll(astrosession *s, int *button)
+int astrosession_gamepad_capture_poll(astrosession *s, int *id)
 {
     (void)s;
     if (!s_capture_have)
         return 0;
     s_capture_have = 0;
-    if (button)
-        *button = s_capture_button;
+    if (id)
+        *id = s_capture_id;
     return 1;
 }
 

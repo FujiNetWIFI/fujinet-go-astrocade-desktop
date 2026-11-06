@@ -13,7 +13,7 @@
 #include "DisplayWidget.h"
 #include "SoftDisplayWidget.h"
 #include "KeyForward.h"
-#include "KeypadWindow.h"
+#include "keypad/KeypadWindow.h"
 #include "SettingsDialog.h"
 
 #include <QDesktopServices>
@@ -230,11 +230,11 @@ void MainWindow::buildMenus()
     machine->addAction("Import BIOS from a &Folder…", this, [this] { importBios(true); });
 
     auto *view = menuBar()->addMenu("&View");
-    view->addAction("Keypad", QKeySequence(Qt::Key_F9), this, [this] { toggleKeypad(); });
+    view->addAction("Controllers", QKeySequence(Qt::Key_F9), this, [this] { toggleKeypad(); });
     view->addAction("Debugger", QKeySequence(Qt::Key_F12), this, [this] { showDebugger(); });
 
     auto *fujinet = menuBar()->addMenu("&FujiNet");
-    fujinet->addAction("Reset Game", QKeySequence(Qt::Key_Backspace), this, [this] {
+    fujinet->addAction("Reset Game", this, [this] {
         astrosession_reset_game(m_session);
         showToast("Reset Game");
     });
@@ -297,33 +297,6 @@ void MainWindow::showFujinetLog()
     dlg->show();
 }
 
-void MainWindow::forwardKey(int keysym, bool down)
-{
-    if (down && m_keypad && m_keypad->mapForwardKey(keysym))
-        return;
-    astro_mapping m = bindings_resolve_keysym(keysym);
-    if (m.kind == ASTRO_MAP_SYSACT) {
-        if (down) {
-            if (!m_sysactDown[m.value]) {
-                m_sysactDown[m.value] = true;
-                astrosession_sysaction_fire(m_session, (astrosession_sysaction)m.value);
-            }
-        } else {
-            m_sysactDown[m.value] = false;
-        }
-        return;
-    }
-    if (m.kind == ASTRO_MAP_KEY) {
-        astrosession_keypad_set(m_session, (astrosession_key)m.value, down);
-        return;
-    }
-    if (m.kind == ASTRO_MAP_HANDLE) {
-        if (down) m_handleMask |= (uint8_t)m.value;
-        else m_handleMask &= (uint8_t)~m.value;
-        astrosession_handle_set(m_session, 0, m_handleMask);
-    }
-}
-
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     switch (e->key()) {
@@ -342,14 +315,14 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         break;
     }
     if (e->isAutoRepeat()) { e->accept(); return; }
-    forwardKey(astro_keysym_from_qt(e), true);
+    astroForwardKey(m_session, m_keypad, e, true);
     e->accept();
 }
 
 void MainWindow::keyReleaseEvent(QKeyEvent *e)
 {
     if (e->isAutoRepeat()) { e->accept(); return; }
-    forwardKey(astro_keysym_from_qt(e), false);
+    astroForwardKey(m_session, m_keypad, e, false);
     e->accept();
 }
 
@@ -357,8 +330,14 @@ void MainWindow::timerEvent(QTimerEvent *ev)
 {
     if (ev->timerId() != m_sysactTimer)
         return;
-    unsigned pending = astrosession_sysaction_take(m_session);
-    for (int a = 0; a < ASTROSESSION_SYSACT_COUNT; ++a)
-        if (pending & (1u << a))
-            astrosession_sysaction_fire(m_session, (astrosession_sysaction)a);
+    astrosession_sysaction_drain(m_session);
+}
+
+/* Keys held into a focus change must not stay down. */
+void MainWindow::changeEvent(QEvent *e)
+{
+    QMainWindow::changeEvent(e);
+    if (e->type() == QEvent::ActivationChange && !isActiveWindow() &&
+        !(m_keypad && m_keypad->isActiveWindow()))
+        astrosession_release_all(m_session);
 }

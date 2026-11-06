@@ -17,6 +17,7 @@ add_executable(fujinet-go-astrocade-macos MACOSX_BUNDLE
   AppDelegate.m
   DisplayView.m
   AstroKeyForward.m
+  keypad/KeypadWindow.m
   DebuggerWindow.m
   SettingsWindow.m
   ${MACOS_ICON}

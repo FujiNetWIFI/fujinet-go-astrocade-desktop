@@ -18,6 +18,7 @@ add_executable(fujinet-go-astrocade-windows WIN32
   display.c
   fujilog.c
   import.c
+  keypad/keypad_window.c
   prefs.c
   debugger/dbg_window.c
   resource.rc

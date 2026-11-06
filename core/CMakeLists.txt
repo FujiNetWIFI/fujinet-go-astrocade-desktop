@@ -154,7 +154,8 @@ add_library(astro_session STATIC
   src/zipread.c
   src/session.c
   src/bindings.c
-  src/astro_keymap.c
+  src/hid_keys.c
+  src/input.c
   src/audio_sdl.c
   src/gamepad_sdl.c
   src/fujinet_runtime.c
@@ -229,6 +230,11 @@ add_executable(bindings_test tests/bindings_test.c)
 target_link_libraries(bindings_test astro_session)
 target_include_directories(bindings_test PRIVATE src)
 add_test(NAME bindings_test COMMAND bindings_test)
+
+add_executable(input_test tests/input_test.c)
+target_link_libraries(input_test astro_session)
+target_include_directories(input_test PRIVATE src)
+add_test(NAME input_test COMMAND input_test)
 
 add_executable(hostport_test tests/hostport_test.c)
 target_link_libraries(hostport_test astro_session)

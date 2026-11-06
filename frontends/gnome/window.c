@@ -16,7 +16,6 @@
 #include "debugger/dbg_window.h"
 #include "display.h"
 #include "keypad/keypad_window.h"
-#include "keysym_map.h"
 #include "prefs.h"
 
 struct _AstroWindow {
@@ -29,8 +28,6 @@ struct _AstroWindow {
     /* GTK4's key-pressed carries no repeat flag; tracked by hand so holding a
      * sysaction key (Backspace) fires Reset Game once, not ~60x/sec. Cleared
      * on focus loss. */
-    gboolean sysact_down[ASTROSESSION_SYSACT_COUNT];
-    guint8 handle_mask;   /* player-0 hand controller, keyboard-driven bits */
     guint sysact_timer_id;
 };
 
@@ -80,39 +77,22 @@ void astro_window_start(AstroWindow *self)
  * leaves that keypad key down in the machine. Bindings are resolved through
  * the bound table so a keypad-window "Map" remap takes effect here too. */
 
-static gboolean forward_key(AstroWindow *self, guint keyval, int down)
+/* The one key path every window shares (this one and the Controllers
+ * window): Map capture first, then the bindings. The keysym names the
+ * PHYSICAL key (evdev = GTK keycode - 8), so NumLock and Shift change
+ * nothing. Returns TRUE when the key was consumed. */
+gboolean astro_window_input_key(astrosession *session, guint keycode,
+                                GdkModifierType state, gboolean down)
 {
-    int keysym = astro_keysym_from_key_event(keyval);
+    const uint32_t keysym = astrosession_keysym_from_evdev(keycode >= 8 ? keycode - 8 : 0);
+    gboolean r;
 
-    /* If the keypad window's Map mode is armed, a keystroke typed here (the
-     * common case -- the main window usually holds focus) completes the
-     * remap instead of driving the machine. */
     if (down && astro_keypad_map_forward_key(keysym))
         return TRUE;
-
-    astro_mapping m = bindings_resolve_keysym(keysym);
-
-    if (m.kind == ASTRO_MAP_SYSACT) {
-        if (down) {
-            if (!self->sysact_down[m.value]) {
-                self->sysact_down[m.value] = TRUE;
-                astrosession_sysaction_fire(self->session, m.value);
-            }
-        } else {
-            self->sysact_down[m.value] = FALSE;
-        }
-        return TRUE;
-    }
-    if (m.kind == ASTRO_MAP_KEY) {
-        astrosession_keypad_set(self->session, m.value, down);
-        return TRUE;
-    }
-    if (m.kind == ASTRO_MAP_HANDLE) {
-        if (down) self->handle_mask |= (guint8)m.value;
-        else self->handle_mask &= (guint8)~m.value;
-        astrosession_handle_set(self->session, 0, self->handle_mask);
-    }
-    return TRUE;
+    r = astrosession_input_key(session, keysym, down,
+                               (state & GDK_CONTROL_MASK) != 0) != 0;
+    astrosession_sysaction_drain(session);
+    return r;
 }
 
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
@@ -121,7 +101,11 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)controller;
-    (void)keycode;
+
+    /* Map mode takes any key, F9 and F12 included */
+    if (astro_keypad_window_is_visible() &&
+        astro_keypad_map_forward_key(astrosession_keysym_from_evdev(keycode >= 8 ? keycode - 8 : 0)))
+        return TRUE;
 
     switch (keyval) {
     case GDK_KEY_F9:
@@ -147,7 +131,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
     default:
         break;
     }
-    return forward_key(self, keyval, 1);
+    return astro_window_input_key(self->session, keycode, state, TRUE);
 }
 
 static void on_key_released(GtkEventControllerKey *controller, guint keyval,
@@ -156,13 +140,12 @@ static void on_key_released(GtkEventControllerKey *controller, guint keyval,
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)controller;
-    (void)keycode;
     if (keyval == GDK_KEY_F9 || keyval == GDK_KEY_F11 || keyval == GDK_KEY_F12)
         return;
     if ((keyval == GDK_KEY_r || keyval == GDK_KEY_R) &&
         (state & GDK_CONTROL_MASK))
         return;
-    forward_key(self, keyval, 0);
+    astro_window_input_key(self->session, keycode, state, FALSE);
 }
 
 static void on_focus_leave(GtkEventControllerFocus *controller,
@@ -170,14 +153,8 @@ static void on_focus_leave(GtkEventControllerFocus *controller,
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)controller;
-    for (int i = 0; i < ASTROSESSION_SYSACT_COUNT; i++)
-        self->sysact_down[i] = FALSE;
-    /* a held movement/trigger key never gets its release event once focus is
-     * gone -- without this the hand controller would stick */
-    if (self->handle_mask) {
-        self->handle_mask = 0;
-        astrosession_handle_set(self->session, 0, 0);
-    }
+    /* a held key never gets its release event once focus is gone */
+    astrosession_release_all(self->session);
 }
 
 /* ---- actions ------------------------------------------------------------ */
@@ -499,7 +476,7 @@ static GMenu *build_menu(void)
     g_menu_append(machine, "Import BIOS from a Folder…", "win.import-bios-folder");
     g_menu_append_section(menu, "Machine", G_MENU_MODEL(machine));
 
-    g_menu_append(view, "Keypad (F9)", "win.keypad");
+    g_menu_append(view, "Controllers (F9)", "win.keypad");
     g_menu_append(view, "Debugger (F12)", "win.debugger");
     g_menu_append_section(menu, "View", G_MENU_MODEL(view));
 
@@ -525,10 +502,7 @@ static GMenu *build_menu(void)
 static gboolean sysact_drain_tick(gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
-    unsigned pending = astrosession_sysaction_take(self->session);
-    for (int a = 0; a < ASTROSESSION_SYSACT_COUNT; a++)
-        if (pending & (1u << a))
-            astrosession_sysaction_fire(self->session, a);
+    astrosession_sysaction_drain(self->session);
     return G_SOURCE_CONTINUE;
 }
 

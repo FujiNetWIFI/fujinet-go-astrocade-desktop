@@ -235,16 +235,28 @@ typedef enum {
     ASTROSESSION_KEY_COUNT   /* trailing count for bindings/keypad walks */
 } astrosession_key;
 
-void astrosession_keypad_set(astrosession *s, astrosession_key key, int pressed);
 
-/* Hand controllers (players 0-3). The core applies the knob inversion. */
+/* Hand controllers (players 0-3): an 8-way stick, a trigger and a knob. */
+#define ASTROSESSION_PLAYERS        4
 #define ASTROSESSION_HANDLE_UP      0x01
 #define ASTROSESSION_HANDLE_DOWN    0x02
 #define ASTROSESSION_HANDLE_LEFT    0x04
 #define ASTROSESSION_HANDLE_RIGHT   0x08
 #define ASTROSESSION_HANDLE_TRIGGER 0x10
-void astrosession_handle_set(astrosession *s, int player, uint8_t mask);
+
+/* The knob is a pot: an absolute position 0-255 (turning right increases)
+ * that HOLDS where it was left. Whoever moved it last wins: a gamepad axis,
+ * the panel's dial (astrosession_knob_set), or the knob keys, which ramp it. */
 void astrosession_knob_set(astrosession *s, int player, uint8_t value);
+int  astrosession_knob_get(astrosession *s, int player);
+#define ASTROSESSION_KNOB_CENTRE 128
+/* The panel dial's geometry, shared so the four toolkits cannot drift: the
+ * knob value for a point (dx, dy) from the dial's centre, y down. The dial
+ * sweeps 270 degrees, 0 at the lower left, 255 at the lower right, centre at
+ * the top. Returns -1 inside the dead centre (radius * 0.2). */
+int  astrosession_knob_from_point(double dx, double dy, double radius);
+/* The inverse: the angle in degrees clockwise from straight up, -135..135. */
+double astrosession_knob_angle(int value);
 
 /* ---- system actions (fire/post/take latch) ------------------------------
  * RESET GAME and RESET TO CONFIG are machine-global. _fire joins threads
@@ -262,32 +274,106 @@ void astrosession_sysaction_post(astrosession *s, astrosession_sysaction a);
  * timer, then _fire each set bit). */
 unsigned astrosession_sysaction_take(astrosession *s);
 
-/* ---- keyboard -> keypad mapping (pure; shared by every frontend) --------
- * A frontend translates its toolkit key event to one of the ASTROSESSION_
- * KEYSYM_* symbols below, then astrosession_key_from_keysym() resolves the
- * default keypad key (or -1). F9/F12 are reserved for the frontends (keypad
- * window / debugger) and are not in the table. */
+/* ---- binding targets ----------------------------------------------------
+ * Everything a key, a pad button or a pad axis can drive: the 24 keypad
+ * keys, the 2 system actions, then 8 actions for each of the 4 players. */
+typedef enum {
+    ASTRO_ACT_UP = 0, ASTRO_ACT_DOWN, ASTRO_ACT_LEFT, ASTRO_ACT_RIGHT,
+    ASTRO_ACT_TRIGGER,
+    ASTRO_ACT_KNOB_DEC,       /* ramp the knob left while held */
+    ASTRO_ACT_KNOB_INC,       /* ramp the knob right while held */
+    ASTRO_ACT_KNOB,           /* the knob itself: a pad axis only */
+    ASTRO_ACT_PER_PLAYER
+} astro_action;
+#define ASTRO_TARGET_KEYPAD   0
+#define ASTRO_TARGET_SYSACT   ASTROSESSION_KEY_COUNT
+#define ASTRO_TARGET_PLAYERS  (ASTRO_TARGET_SYSACT + ASTROSESSION_SYSACT_COUNT)
+#define ASTRO_TARGET_PLAYER(p, a) \
+    (ASTRO_TARGET_PLAYERS + (p) * ASTRO_ACT_PER_PLAYER + (a))
+#define ASTRO_TARGET_COUNT \
+    (ASTRO_TARGET_PLAYERS + ASTROSESSION_PLAYERS * ASTRO_ACT_PER_PLAYER)
+
+/* ---- driving the machine --------------------------------------------------
+ * Each input source (the panel, the keyboard, up to 4 gamepads) keeps its own
+ * holds; the machine sees their union, so one source releasing can never
+ * cancel another's hold. */
+
+/* The on-screen panel pressing or releasing a target (keypad key or a
+ * player's stick/trigger/knob-key). System actions are not pressed this way:
+ * use astrosession_sysaction_fire. */
+void astrosession_press(astrosession *s, int target, int down);
+/* 1 while any source holds the target (the panel paints it lit). */
+int  astrosession_target_held(astrosession *s, int target);
+/* Release everything the keyboard holds (focus lost). */
+void astrosession_release_all(astrosession *s);
+
+/* A key event, as a keysym (below). 1 = the key is bound and was consumed.
+ * A key bound to a system action POSTS it: call astrosession_sysaction_drain
+ * afterwards, from the UI thread. Call for every press and release; with
+ * ctrl_down a press is never consumed (menu accelerators win), but a release
+ * always clears what its press set. */
+int  astrosession_input_key(astrosession *s, uint32_t keysym, int down,
+                            int ctrl_down);
+/* take + fire everything posted. UI thread only. */
+void astrosession_sysaction_drain(astrosession *s);
+
+/* Keysyms are X11's, and name the PHYSICAL key (the unshifted US-layout
+ * symbol), so Shift or NumLock never changes what a key is. */
 enum {
     ASTROSESSION_KEYSYM_NONE = 0,
-    /* printable keys use their ASCII value directly (0x20-0x7e) */
-    ASTROSESSION_KEYSYM_UP = 0x100, ASTROSESSION_KEYSYM_DOWN,
-    ASTROSESSION_KEYSYM_LEFT, ASTROSESSION_KEYSYM_RIGHT,
-    ASTROSESSION_KEYSYM_RETURN, ASTROSESSION_KEYSYM_BACKSPACE,
-    ASTROSESSION_KEYSYM_ESCAPE, ASTROSESSION_KEYSYM_SPACE,
+    ASTROSESSION_KEYSYM_UP = 0xff52, ASTROSESSION_KEYSYM_DOWN = 0xff54,
+    ASTROSESSION_KEYSYM_LEFT = 0xff51, ASTROSESSION_KEYSYM_RIGHT = 0xff53,
+    ASTROSESSION_KEYSYM_ESCAPE = 0xff1b, ASTROSESSION_KEYSYM_RETURN = 0xff0d,
+    ASTROSESSION_KEYSYM_BACKSPACE = 0xff08, ASTROSESSION_KEYSYM_TAB = 0xff09,
+    ASTROSESSION_KEYSYM_SPACE = 0x20,
+    ASTROSESSION_KEYSYM_F1 = 0xffbe, ASTROSESSION_KEYSYM_F2, ASTROSESSION_KEYSYM_F3,
+    ASTROSESSION_KEYSYM_F4, ASTROSESSION_KEYSYM_F5, ASTROSESSION_KEYSYM_F6,
+    ASTROSESSION_KEYSYM_F7, ASTROSESSION_KEYSYM_F8, ASTROSESSION_KEYSYM_F9,
+    ASTROSESSION_KEYSYM_F10, ASTROSESSION_KEYSYM_F11, ASTROSESSION_KEYSYM_F12,
+    ASTROSESSION_KEYSYM_LSHIFT = 0xffe1, ASTROSESSION_KEYSYM_RSHIFT = 0xffe2,
+    ASTROSESSION_KEYSYM_LCTRL = 0xffe3, ASTROSESSION_KEYSYM_RCTRL = 0xffe4,
+    ASTROSESSION_KEYSYM_LALT = 0xffe9, ASTROSESSION_KEYSYM_RALT = 0xffea,
+    ASTROSESSION_KEYSYM_KP_0 = 0xffb0, ASTROSESSION_KEYSYM_KP_1,
+    ASTROSESSION_KEYSYM_KP_2, ASTROSESSION_KEYSYM_KP_3, ASTROSESSION_KEYSYM_KP_4,
+    ASTROSESSION_KEYSYM_KP_5, ASTROSESSION_KEYSYM_KP_6, ASTROSESSION_KEYSYM_KP_7,
+    ASTROSESSION_KEYSYM_KP_8, ASTROSESSION_KEYSYM_KP_9,
+    ASTROSESSION_KEYSYM_KP_ENTER = 0xff8d, ASTROSESSION_KEYSYM_KP_MULTIPLY = 0xffaa,
+    ASTROSESSION_KEYSYM_KP_DIVIDE = 0xffaf, ASTROSESSION_KEYSYM_KP_PERIOD = 0xffae
 };
+/* A key with no X11 keysym of its own is still bindable: 0x10000 + HID usage. */
+#define ASTROSESSION_KEYSYM_HID_BASE 0x10000u
+#define ASTROSESSION_HID_USAGE_MAX   0xE7u
+/* Native key codes -> keysym, 0 when unknown: Windows scan code (set 1, with
+ * the E0 flag = lParam bit 24), Linux evdev code (GTK/Qt keycode minus 8) and
+ * macOS virtual key code. */
+uint32_t astrosession_keysym_from_win_scancode(unsigned scancode, int extended);
+uint32_t astrosession_keysym_from_evdev(unsigned code);
+uint32_t astrosession_keysym_from_macos_keycode(unsigned keycode);
+/* "Space", "Keypad 5", "F1", "A"; returns the length. */
+int astrosession_keysym_name(uint32_t keysym, char *dst, int dstsz);
 
-/* Returns the keypad key for a keysym under the default binding, or -1. */
-int astrosession_key_from_keysym(int keysym);
+/* ---- gamepads -------------------------------------------------------------
+ * A pad input id is a button (an SDL_GamepadButton index, 0-31) or an axis
+ * (ASTRO_PAD_AXIS_BASE + an SDL_GamepadAxis index): LEFTX LEFTY RIGHTX RIGHTY
+ * LTRIGGER RTRIGGER. A digital target bound to an axis fires at +50% (so a
+ * trigger works as a button); the knob follows an axis absolutely. The D-pad
+ * and the left stick always steer the pad's player. Pads take players 0-3 in
+ * the order SDL lists them. -1 = none. */
+#define ASTRO_PAD_AXIS_BASE   128
+#define ASTRO_PAD_AXIS_COUNT  6
+int  astrosession_pad_input_name(int id, char *dst, int dstsz);
+int  astrosession_gamepad_count(astrosession *s);
+/* The idx-th connected pad's name and the player it drives (-1 if none). */
+int  astrosession_gamepad_name(astrosession *s, int idx, char *dst, int dstsz);
 
-/* ---- gamepad-button capture, for the keypad window's Map mode ------------
- * A frontend arming a remap to a gamepad button calls _begin, then polls
- * _poll on a UI timer (SDL gamepad events land on the session's own poll
- * thread, not the UI thread); _poll returns 1 with *button set (an
- * SDL_GamepadButton index) once a button is pressed, then disarms. _cancel
- * disarms without capturing. While armed, the poll thread records the press
- * instead of injecting it, so binding a button can't also drive the machine. */
+/* ---- pad-input capture, for the Controllers window's Map mode -------------
+ * A frontend arming a remap to a pad input calls _begin, then polls _poll on
+ * a UI timer (pad events land on the session's own poll thread); _poll
+ * returns 1 with *id set once a button is pressed or an axis deflected past
+ * 60%, then disarms. _cancel disarms without capturing. While armed the poll
+ * thread records the input instead of injecting it. */
 void astrosession_gamepad_capture_begin(astrosession *s);
-int  astrosession_gamepad_capture_poll(astrosession *s, int *button);
+int  astrosession_gamepad_capture_poll(astrosession *s, int *id);
 void astrosession_gamepad_capture_cancel(astrosession *s);
 
 #ifdef __cplusplus

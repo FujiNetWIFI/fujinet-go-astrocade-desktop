@@ -25,6 +25,11 @@ void       astro_window_start(AstroWindow *self);
 GtkFileDialog *astro_file_dialog(const char *title, const char *filter_name,
                                  const char *const *exts);
 
+/* The key path both windows share (Map capture, then the bindings): `keycode`
+ * is GTK's hardware keycode. TRUE when the key was consumed. */
+gboolean astro_window_input_key(astrosession *session, guint keycode,
+                                GdkModifierType state, gboolean down);
+
 /* main.c */
 const char *astro_icon_name(void);
 

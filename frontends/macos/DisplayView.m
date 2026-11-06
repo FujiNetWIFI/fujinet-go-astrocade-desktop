@@ -131,4 +131,16 @@
     AstroForwardKeyEvent(_session, event, 0);
 }
 
+- (void)flagsChanged:(NSEvent *)event
+{
+    AstroForwardModifierEvent(_session, event);
+}
+
+/* a key held into a focus change never gets its key-up */
+- (BOOL)resignFirstResponder
+{
+    astrosession_release_all(_session);
+    return [super resignFirstResponder];
+}
+
 @end

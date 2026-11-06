@@ -28,7 +28,6 @@ protected:
 
 private:
     void buildMenus();
-    void forwardKey(int keysym, bool down);
     void restartSession();
     void start();
     void showPage();
@@ -47,10 +46,9 @@ private:
     DisplayView *m_display = nullptr;
     KeypadWindow *m_keypad = nullptr;
     DebuggerWindow *m_debugger = nullptr;
-    bool m_sysactDown[ASTROSESSION_SYSACT_COUNT] = {};
-    uint8_t m_handleMask = 0;
     int m_sysactTimer = 0;
     void timerEvent(QTimerEvent *) override;
+    void changeEvent(QEvent *) override;
 };
 
 #endif

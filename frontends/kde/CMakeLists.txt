@@ -22,7 +22,8 @@ set(KDE_SOURCES
   DisplayWidget.cpp
   SoftDisplayWidget.cpp
   FrameFeed.cpp
-  KeypadWindow.cpp
+  KeyForward.cpp
+  keypad/KeypadWindow.cpp
   SettingsDialog.cpp
   DebuggerWindow.cpp
 )
@@ -50,6 +51,22 @@ install(FILES data/${KDE_APP_ID}.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES data/${KDE_APP_ID}.metainfo.xml
         DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+
+# The key translation and the Controllers window, on the offscreen platform.
+find_package(Qt6 COMPONENTS Test QUIET)
+if(Qt6Test_FOUND)
+  add_executable(keypad_test keypad_test.cpp KeyForward.cpp
+                 keypad/KeypadWindow.cpp)
+  set_target_properties(keypad_test PROPERTIES CXX_STANDARD 17)
+  target_link_libraries(keypad_test PRIVATE astro_session astro_core
+                        Qt6::Widgets Qt6::Test m)
+  target_include_directories(keypad_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                             "${CMAKE_SOURCE_DIR}/core/src")
+  target_compile_options(keypad_test PRIVATE -Wall -Wextra)
+  add_test(NAME keypad_kde COMMAND keypad_test)
+  set_tests_properties(keypad_kde PROPERTIES
+                       ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
 
 find_program(DESKTOP_FILE_VALIDATE desktop-file-validate)
 if(DESKTOP_FILE_VALIDATE)

@@ -17,6 +17,7 @@
 #include "astrodebug.h"
 #include "bindings.h"
 #include "gamepad_sdl.h"
+#include "input.h"
 #include "host.h"
 #include "session_internal.h"
 
@@ -280,6 +281,7 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
         return -1;
     }
 
+    astro_input_resync();       /* the machine began with every input at 0 */
     audio_start(s);             /* best-effort; silent if no device */
     astro_gamepad_start(s);     /* best-effort; no-op without a gamepad */
     s->running = 1;
@@ -336,7 +338,7 @@ int astrosession_reset_game(astrosession *s)
 {
     if (!astrosession_is_running(s))
         return 0;
-    astro_host_keypad_release_all();
+    astro_input_clear_all();
     astro_host_reset();
     return 0;
 }
@@ -369,29 +371,6 @@ int astrosession_render_audio(astrosession *s, int16_t *dst, int max_samples)
 }
 
 /* ---- input ---- */
-
-void astrosession_keypad_set(astrosession *s, astrosession_key key, int pressed)
-{
-    (void)s;
-    if (key < 0 || key >= ASTROSESSION_KEY_COUNT)
-        return;
-    /* the enum is row-major from the top-left: col = key % 4, row = key / 4 */
-    const int col = key % 4;
-    const int row = key / 4;
-    astro_host_keypad_set(col, row, pressed != 0);
-}
-
-void astrosession_handle_set(astrosession *s, int player, uint8_t mask)
-{
-    (void)s;
-    astro_host_handle_set(player, mask);
-}
-
-void astrosession_knob_set(astrosession *s, int player, uint8_t value)
-{
-    (void)s;
-    astro_host_knob_set(player, value);
-}
 
 /* ---- system actions ---- */
 

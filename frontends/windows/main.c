@@ -5,9 +5,8 @@
  * (Direct3D 11 flip model, presented on vblank from its own thread). Until a
  * BIOS is imported, the No-BIOS page is painted in its place, with the same
  * two buttons fujinet-go-msdos-desktop has. A menu covers cartridge, BIOS
- * import, Preferences, keypad, debugger, resets and FujiNet; the keypad is a
- * fixed-size window of buttons subclassed so a press and release drive
- * astrosession_keypad_set (Win32 BUTTON only reports a click). FujiNet
+ * import, Preferences, keypad, debugger, resets and FujiNet; the Controllers window
+ * (keypad/keypad_window.c) is a fixed-size window of painted controls. FujiNet
  * Configuration opens the system browser via ShellExecute.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -26,7 +25,7 @@
 #include "display.h"
 #include "fujilog.h"
 #include "import.h"
-#include "key_forward.h"
+#include "keypad/keypad_window.h"
 #include "prefs.h"
 #include "resource.h"
 #include "win_common.h"
@@ -37,8 +36,6 @@ static HWND g_bios_files_btn, g_bios_folder_btn;
 static HFONT g_ui_font, g_title_font;
 static HICON g_big_icon;
 static int g_dpi = 96;
-static int g_sysact_down[ASTROSESSION_SYSACT_COUNT];
-static uint8_t g_handle_mask;   /* player-0 hand controller, keyboard-driven bits */
 
 #define S(v) astro_scale((v), g_dpi)
 
@@ -164,165 +161,9 @@ static void make_fonts(void)
     if (g_bios_folder_btn) SendMessageW(g_bios_folder_btn, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
 }
 
-/* ---- keypad window ---- */
-
-/* row-major, matching the astrosession_key enum order; the glyphs the
- * GNOME/KDE keypads show */
-static const wchar_t *k_labels[ASTROSESSION_KEY_COUNT] = {
-    L"C",  L"\x2191", L"\x2193", L"%",
-    L"MR", L"MS",     L"CH",     L"\x00F7",
-    L"7",  L"8",      L"9",      L"\x00D7",
-    L"4",  L"5",      L"6",      L"\x2212",
-    L"1",  L"2",      L"3",      L"+",
-    L"CE", L"0",      L".",      L"=",
-};
-
-/* the layout, in 96-dpi units */
-#define KEY_W 64
-#define KEY_H 40
-#define KEY_GAP 4
-#define PAD_M 8
-#define SYS_GAP 10
-#define SYS_H 32
-#define PAD_CW (PAD_M + 4 * KEY_W + 3 * KEY_GAP + PAD_M)
-#define PAD_CH (PAD_M + 6 * KEY_H + 5 * KEY_GAP + SYS_GAP + SYS_H + PAD_M)
-
-static HWND g_keypad_window;
-static HWND g_key_btn[ASTROSESSION_KEY_COUNT], g_sys_btn[2];
-static HFONT g_pad_font, g_pad_sys_font;
-static WNDPROC g_btn_proc;
-
-static LRESULT CALLBACK key_btn_proc(HWND h, UINT msg, WPARAM w, LPARAM l)
-{
-    int key = (int)(intptr_t)GetPropA(h, "astro_key");
-    if (msg == WM_LBUTTONDOWN)
-        astrosession_keypad_set(g_session, (astrosession_key)key, 1);
-    else if (msg == WM_LBUTTONUP)
-        astrosession_keypad_set(g_session, (astrosession_key)key, 0);
-    return CallWindowProcW(g_btn_proc, h, msg, w, l);
-}
-
-static void sysact_click(int a) { astrosession_sysaction_fire(g_session, (astrosession_sysaction)a); }
-
-/* Buttons, fonts and the window's own size all at its DPI: the client is
- * exactly the buttons plus their margins. */
-static void keypad_layout(const RECT *at)
-{
-    const int dpi = astro_window_dpi(g_keypad_window);
-    SIZE outer;
-    if (g_pad_font) DeleteObject(g_pad_font);
-    if (g_pad_sys_font) DeleteObject(g_pad_sys_font);
-    g_pad_font = astro_make_font(dpi, 17, FW_BOLD, NULL);
-    g_pad_sys_font = astro_make_font(dpi, 0, FW_NORMAL, NULL);
-    for (int key = 0; key < ASTROSESSION_KEY_COUNT; key++) {
-        const int row = key / 4, col = key % 4;
-        MoveWindow(g_key_btn[key], astro_scale(PAD_M + col * (KEY_W + KEY_GAP), dpi),
-                   astro_scale(PAD_M + row * (KEY_H + KEY_GAP), dpi),
-                   astro_scale(KEY_W, dpi), astro_scale(KEY_H, dpi), TRUE);
-        SendMessageW(g_key_btn[key], WM_SETFONT, (WPARAM)g_pad_font, TRUE);
-    }
-    for (int i = 0; i < 2; i++) {
-        const int half = (4 * KEY_W + 3 * KEY_GAP - KEY_GAP * 2) / 2;
-        MoveWindow(g_sys_btn[i], astro_scale(PAD_M + i * (half + 2 * KEY_GAP), dpi),
-                   astro_scale(PAD_M + 6 * KEY_H + 5 * KEY_GAP + SYS_GAP, dpi),
-                   astro_scale(half, dpi), astro_scale(SYS_H, dpi), TRUE);
-        SendMessageW(g_sys_btn[i], WM_SETFONT, (WPARAM)g_pad_sys_font, TRUE);
-    }
-    outer = astro_outer_size(g_keypad_window, astro_scale(PAD_CW, dpi), astro_scale(PAD_CH, dpi), FALSE);
-    if (at)
-        SetWindowPos(g_keypad_window, NULL, at->left, at->top, outer.cx, outer.cy,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-    else
-        SetWindowPos(g_keypad_window, NULL, 0, 0, outer.cx, outer.cy,
-                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
-}
-
-static LRESULT CALLBACK keypad_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
-{
-    switch (msg) {
-    case WM_COMMAND: {
-        int id = LOWORD(w);
-        if (id == 100) sysact_click(ASTROSESSION_SYSACT_RESET_GAME);
-        else if (id == 101) sysact_click(ASTROSESSION_SYSACT_RESET_CONFIG);
-        return 0;
-    }
-    case WM_DPICHANGED:
-        keypad_layout((const RECT *)l);
-        return 0;
-    case WM_CLOSE:
-        ShowWindow(hwnd, SW_HIDE);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, w, l);
-}
-
-static void create_keypad(void)
-{
-    HINSTANCE inst = GetModuleHandle(NULL);
-    WNDCLASSW wc;
-    ZeroMemory(&wc, sizeof wc);
-    wc.lpfnWndProc = keypad_proc;
-    wc.hInstance = inst;
-    wc.lpszClassName = L"AstroKeypad";
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APPICON));
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    RegisterClassW(&wc);
-
-    /* fixed size, floating: no thick frame, no maximize box */
-    g_keypad_window = CreateWindowW(L"AstroKeypad", L"Keypad",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, PAD_CW, PAD_CH, g_hwnd, NULL, inst, NULL);
-
-    for (int key = 0; key < ASTROSESSION_KEY_COUNT; key++) {
-        HWND b = CreateWindowW(L"BUTTON", k_labels[key], WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, KEY_W, KEY_H, g_keypad_window, (HMENU)(intptr_t)(500 + key), inst, NULL);
-        SetPropA(b, "astro_key", (HANDLE)(intptr_t)key);
-        if (!g_btn_proc)
-            g_btn_proc = (WNDPROC)GetWindowLongPtrW(b, GWLP_WNDPROC);
-        SetWindowLongPtrW(b, GWLP_WNDPROC, (LONG_PTR)key_btn_proc);
-        g_key_btn[key] = b;
-    }
-    /* System row */
-    g_sys_btn[0] = CreateWindowW(L"BUTTON", L"Reset Game", WS_CHILD | WS_VISIBLE,
-        0, 0, 1, 1, g_keypad_window, (HMENU)(intptr_t)100, inst, NULL);
-    g_sys_btn[1] = CreateWindowW(L"BUTTON", L"Reset to CONFIG", WS_CHILD | WS_VISIBLE,
-        0, 0, 1, 1, g_keypad_window, (HMENU)(intptr_t)101, inst, NULL);
-    keypad_layout(NULL);
-}
-
 static void toggle_keypad(void)
 {
-    if (!g_keypad_window)
-        create_keypad();
-    ShowWindow(g_keypad_window, IsWindowVisible(g_keypad_window) ? SW_HIDE : SW_SHOW);
-}
-
-/* ---- input ---- */
-
-static void forward_key(int keysym, int down)
-{
-    astro_mapping m = bindings_resolve_keysym(keysym);
-    if (m.kind == ASTRO_MAP_SYSACT) {
-        if (down) {
-            if (!g_sysact_down[m.value]) {
-                g_sysact_down[m.value] = 1;
-                astrosession_sysaction_fire(g_session, (astrosession_sysaction)m.value);
-            }
-        } else {
-            g_sysact_down[m.value] = 0;
-        }
-        return;
-    }
-    if (m.kind == ASTRO_MAP_KEY) {
-        astrosession_keypad_set(g_session, (astrosession_key)m.value, down);
-        return;
-    }
-    if (m.kind == ASTRO_MAP_HANDLE) {
-        if (down) g_handle_mask |= (uint8_t)m.value;
-        else g_handle_mask &= (uint8_t)~m.value;
-        astrosession_handle_set(g_session, 0, g_handle_mask);
-    }
+    astro_controllers_toggle(g_hwnd, g_session);
 }
 
 /* ---- menu / actions ---- */
@@ -444,7 +285,7 @@ static HMENU build_menu(void)
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)machine, "&Machine");
 
     HMENU view = CreatePopupMenu();
-    AppendMenuA(view, MF_STRING, IDM_KEYPAD, "&Keypad\tF9");
+    AppendMenuA(view, MF_STRING, IDM_KEYPAD, "&Controllers\tF9");
     AppendMenuA(view, MF_STRING, IDM_DEBUGGER, "&Debugger\tF12");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)view, "&View");
 
@@ -470,31 +311,26 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
         do_command(LOWORD(w));
         return 0;
     case WM_KEYDOWN:
+        if (l & 0x40000000)      /* ignore auto-repeat */
+            return 0;
+        /* Map mode takes any key, F9 and F12 included */
+        if (astro_controllers_visible() && astro_controllers_key(g_session, l, TRUE))
+            return 0;
         if (w == VK_F9) { toggle_keypad(); return 0; }
         if (w == VK_F12) { astro_debugger_show(g_hwnd, g_session); return 0; }
-        if (!(l & 0x40000000))   /* ignore auto-repeat */
-            forward_key(astro_keysym_from_vk(w), 1);
+        astro_controllers_key(g_session, l, TRUE);
         return 0;
     case WM_KEYUP:
-        forward_key(astro_keysym_from_vk(w), 0);
+        astro_controllers_key(g_session, l, FALSE);
         return 0;
     case WM_KILLFOCUS:
         /* the key-ups go to whichever window has focus now: let go of
          * everything, or a held key sticks in the machine */
-        for (int a = 0; a < ASTROSESSION_SYSACT_COUNT; a++)
-            g_sysact_down[a] = 0;
-        if (g_handle_mask) {
-            g_handle_mask = 0;
-            astrosession_handle_set(g_session, 0, 0);
-        }
+        astrosession_release_all(g_session);
         return 0;
-    case WM_TIMER: {
-        unsigned pending = astrosession_sysaction_take(g_session);
-        for (int a = 0; a < ASTROSESSION_SYSACT_COUNT; a++)
-            if (pending & (1u << a))
-                astrosession_sysaction_fire(g_session, (astrosession_sysaction)a);
+    case WM_TIMER:
+        astrosession_sysaction_drain(g_session);    /* posted from the pad thread */
         return 0;
-    }
     case WM_SIZE:
         layout();
         return 0;

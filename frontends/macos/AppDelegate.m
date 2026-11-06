@@ -18,31 +18,13 @@
 #import "SettingsWindow.h"
 
 #include "bindings.h"
-
-/* ---- a keypad button that reports press AND release ---- */
-
-@interface PadButton : NSButton
-@property (nonatomic) int astroKey;
-@property (nonatomic, assign) astrosession *session;
-@end
-
-@implementation PadButton
-- (void)mouseDown:(NSEvent *)e {
-    astrosession_keypad_set(self.session, (astrosession_key)self.astroKey, 1);
-    [super mouseDown:e];
-}
-- (void)mouseUp:(NSEvent *)e {
-    astrosession_keypad_set(self.session, (astrosession_key)self.astroKey, 0);
-    [super mouseUp:e];
-}
-@end
+#import "keypad/KeypadWindow.h"
 
 @implementation AppDelegate {
     astrosession *_session;
     NSWindow *_window;
     DisplayView *_display;
     NSView *_noBios;
-    NSWindow *_keypadWindow;
 }
 
 - (instancetype)initWithSession:(astrosession *)session
@@ -186,7 +168,7 @@
     NSMenuItem *viewItem = [[NSMenuItem alloc] init];
     [menubar addItem:viewItem];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
-    [view addItemWithTitle:@"Keypad" action:@selector(toggleKeypad:) keyEquivalent:@""].target = self;
+    [view addItemWithTitle:@"Controllers" action:@selector(toggleKeypad:) keyEquivalent:@"k"].target = self;
     [view addItemWithTitle:@"Debugger" action:@selector(showDebugger:) keyEquivalent:@""].target = self;
     viewItem.submenu = view;
 
@@ -343,60 +325,12 @@
     [w makeKeyAndOrderFront:nil];
 }
 
-/* ---- keypad window ---- */
+/* ---- Controllers window ---- */
 
 - (void)toggleKeypad:(id)sender
 {
     (void)sender;
-    if (!_keypadWindow)
-        [self buildKeypad];
-    if (_keypadWindow.isVisible)
-        [_keypadWindow orderOut:nil];
-    else
-        [_keypadWindow makeKeyAndOrderFront:nil];
-}
-
-- (void)buildKeypad
-{
-    static const char *labels[ASTROSESSION_KEY_COUNT] = {
-        "C","↑","↓","%", "MR","MS","CH","÷", "7","8","9","×",
-        "4","5","6","−", "1","2","3","+", "CE","0",".","=",
-    };
-    /* exactly the buttons and their margins: 4 x 64 + 3 x 4 wide, six rows
-     * of 40 + 5 x 4, the system row of 30 and a 10 gap above it */
-    enum { PAD_W = 8 + 4 * 64 + 3 * 4 + 8, PAD_H = 8 + 30 + 10 + 6 * 40 + 5 * 4 + 8 };
-    _keypadWindow = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, PAD_W, PAD_H)
-                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
-                    backing:NSBackingStoreBuffered defer:NO];
-    _keypadWindow.title = @"Keypad";
-    [_keypadWindow center];
-    NSView *content = _keypadWindow.contentView;
-
-    for (int key = 0; key < ASTROSESSION_KEY_COUNT; key++) {
-        int row = key / 4, col = key % 4;
-        PadButton *b = [[PadButton alloc] initWithFrame:
-            NSMakeRect(8 + col * 68, PAD_H - 8 - 40 - row * 44, 64, 40)];
-        b.title = @(labels[key]);
-        b.bezelStyle = NSBezelStyleRounded;
-        b.astroKey = key;
-        b.session = _session;
-        if (col == 3) {   /* the gold column */
-            b.wantsLayer = YES;
-            b.layer.backgroundColor = [[NSColor colorWithRed:0.91 green:0.76
-                                                        blue:0.29 alpha:1] CGColor];
-        }
-        [content addSubview:b];
-    }
-    /* System row */
-    NSButton *rg = [[NSButton alloc] initWithFrame:NSMakeRect(8, 8, 132, 30)];
-    rg.title = @"Reset Game"; rg.bezelStyle = NSBezelStyleRounded;
-    rg.target = self; rg.action = @selector(resetGame:);
-    [content addSubview:rg];
-    NSButton *rc = [[NSButton alloc] initWithFrame:NSMakeRect(144, 8, 132, 30)];
-    rc.title = @"Reset to CONFIG"; rc.bezelStyle = NSBezelStyleRounded;
-    rc.target = self; rc.action = @selector(resetConfig:);
-    [content addSubview:rc];
+    [AstroControllers toggleForSession:_session];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app

@@ -7,49 +7,41 @@
 
 #include "bindings.h"
 
-int AstroKeysymFromEvent(NSEvent *event)
+BOOL AstroControllersMapKey(uint32_t keysym);   /* keypad/KeypadWindow.m */
+
+uint32_t AstroKeysymFromEvent(NSEvent *event)
 {
-    switch (event.keyCode) {
-    case 126: return ASTROSESSION_KEYSYM_UP;
-    case 125: return ASTROSESSION_KEYSYM_DOWN;
-    case 123: return ASTROSESSION_KEYSYM_LEFT;
-    case 124: return ASTROSESSION_KEYSYM_RIGHT;
-    case 36:  case 76: return ASTROSESSION_KEYSYM_RETURN;   /* Return / KP-Enter */
-    case 51:  return ASTROSESSION_KEYSYM_BACKSPACE;
-    case 53:  return ASTROSESSION_KEYSYM_ESCAPE;
-    case 49:  return ASTROSESSION_KEYSYM_SPACE;
-    default: break;
-    }
-    /* printable characters pass through as ASCII */
-    NSString *chars = event.charactersIgnoringModifiers;
-    if (chars.length == 1) {
-        unichar c = [chars characterAtIndex:0];
-        if (c >= 0x20 && c < 0x7f)
-            return (int)c;
-    }
-    return ASTROSESSION_KEYSYM_NONE;
+    return astrosession_keysym_from_macos_keycode(event.keyCode);
 }
 
-/* player-0 hand controller, keyboard-driven bits (process-global, like the
- * bindings table itself). */
-static uint8_t s_handleMask;
-
-void AstroForwardKeyEvent(astrosession *session, NSEvent *event, int down)
+BOOL AstroForwardKeyEvent(astrosession *session, NSEvent *event, int down)
 {
-    int keysym = AstroKeysymFromEvent(event);
-    astro_mapping m = bindings_resolve_keysym(keysym);
-    if (m.kind == ASTRO_MAP_SYSACT) {
-        if (down)
-            astrosession_sysaction_fire(session, (astrosession_sysaction)m.value);
+    const uint32_t ks = AstroKeysymFromEvent(event);
+    BOOL r;
+    if (down && AstroControllersMapKey(ks))
+        return YES;
+    if (down && (event.modifierFlags & NSEventModifierFlagCommand))
+        return NO;
+    r = astrosession_input_key(session, ks, down,
+                               (event.modifierFlags & NSEventModifierFlagControl) != 0) != 0;
+    astrosession_sysaction_drain(session);
+    return r;
+}
+
+void AstroForwardModifierEvent(astrosession *session, NSEvent *event)
+{
+    NSEventModifierFlags f = event.modifierFlags;
+    BOOL down;
+    switch (event.keyCode) {
+    case 56: case 60: down = (f & NSEventModifierFlagShift) != 0; break;
+    case 59: case 62: down = (f & NSEventModifierFlagControl) != 0; break;
+    case 58: case 61: down = (f & NSEventModifierFlagOption) != 0; break;
+    case 57:          down = (f & NSEventModifierFlagCapsLock) != 0; break;
+    default: return;
+    }
+    const uint32_t ks = AstroKeysymFromEvent(event);
+    if (down && AstroControllersMapKey(ks))
         return;
-    }
-    if (m.kind == ASTRO_MAP_KEY) {
-        astrosession_keypad_set(session, (astrosession_key)m.value, down);
-        return;
-    }
-    if (m.kind == ASTRO_MAP_HANDLE) {
-        if (down) s_handleMask |= (uint8_t)m.value;
-        else s_handleMask &= (uint8_t)~m.value;
-        astrosession_handle_set(session, 0, s_handleMask);
-    }
+    astrosession_input_key(session, ks, down, 0);
+    astrosession_sysaction_drain(session);
 }

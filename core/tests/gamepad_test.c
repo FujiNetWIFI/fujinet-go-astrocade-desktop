@@ -59,7 +59,11 @@ int main(void)
     }
 
     /* the button-name table resolves the common buttons */
-    CHECK(astro_gamepad_button_name(0) != NULL, "button 0 (South) named");
+    char nm[32];
+    astrosession_pad_input_name(0, nm, sizeof nm);
+    CHECK(strcmp(nm, "A") == 0, "button 0 (South) named");
+    astrosession_pad_input_name(ASTRO_PAD_AXIS_BASE + 2, nm, sizeof nm);
+    CHECK(strcmp(nm, "Right Stick X") == 0, "axis 2 named");
 
     astrosession_free(s);
     char cmd[600];
