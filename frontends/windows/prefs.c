@@ -169,7 +169,7 @@ static void fit_window(const RECT *at)
 
 static void import_roms(int folder)
 {
-    if (astro_import_bios(g_win, g_session, folder, 1) < 0)
+    if (astro_import_bios(g_win, g_session, folder, 0) < 0)
         return;
     refresh_roms();
     if (g_hooks.imported)

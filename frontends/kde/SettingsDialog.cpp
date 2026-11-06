@@ -68,17 +68,28 @@ void refresh(State &st)
 
 void importRoms(State &st, bool folder)
 {
-    const QString path = folder
-        ? QFileDialog::getExistingDirectory(st.dialog, QStringLiteral("Import BIOS from a Folder"))
-        : QFileDialog::getOpenFileName(st.dialog, QStringLiteral("Import BIOS"), QString(),
-                                       QStringLiteral("BIOS images and ROM sets (*.bin *.BIN *.rom *.ROM "
-                                                      "*.zip *.ZIP);;All files (*)"));
-    if (path.isEmpty())
+    QStringList paths;
+    if (folder) {
+        const QString dir = QFileDialog::getExistingDirectory(st.dialog, QStringLiteral("Import BIOS from a Folder"));
+        if (!dir.isEmpty())
+            paths << dir;
+    } else {
+        paths = QFileDialog::getOpenFileNames(st.dialog, QStringLiteral("Import BIOS"), QString(),
+                                              QStringLiteral("BIOS images and ROM sets (*.bin *.BIN *.rom *.ROM "
+                                                             "*.zip *.ZIP);;All files (*)"));
+    }
+    if (paths.isEmpty())
         return;
-    char msg[1024];
-    const int rc = astrosession_rom_import(st.session, path.toUtf8().constData(), msg, sizeof msg);
-    QMessageBox::information(st.dialog, rc == 0 ? QStringLiteral("BIOS Imported") : QStringLiteral("Nothing Imported"),
-                             QString::fromUtf8(msg));
+    QStringList log;
+    int imported = 0;
+    for (const QString &p : paths) {
+        char msg[1024];
+        if (astrosession_rom_import(st.session, p.toUtf8().constData(), msg, sizeof msg) == 0)
+            imported++;
+        log << QString::fromUtf8(msg);
+    }
+    QMessageBox::information(st.dialog, imported ? QStringLiteral("BIOS Imported") : QStringLiteral("Nothing Imported"),
+                             log.join(QLatin1Char('\n')));
     if (st.imported)
         st.imported();
     refresh(st);

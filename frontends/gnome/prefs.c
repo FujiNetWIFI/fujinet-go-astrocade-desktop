@@ -168,21 +168,47 @@ static void refresh_rows(PrefsState *st)
 
 static const char *const ROM_EXTS[] = { "bin", "rom", "zip", NULL };
 
+/* Each chosen file (or the folder) through the import, then one message
+ * saying what came of it all, as the Machine menu does. */
 static void on_rom_chosen(GObject *src, GAsyncResult *res, gpointer ud)
 {
     PrefsState *st = ud;
     gboolean folder = GPOINTER_TO_INT(g_object_get_data(src, "astro-folder"));
-    g_autoptr(GFile) f = folder
-        ? gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, NULL)
-        : gtk_file_dialog_open_finish(GTK_FILE_DIALOG(src), res, NULL);
-    g_autofree char *path = f ? g_file_get_path(f) : NULL;
-    char msg[1024];
-    if (!path)
-        return;
-    astrosession_rom_import(st->session, path, msg, sizeof msg);
-    astro_window_toast(st->window, msg);
-    astro_window_show_page(st->window);
-    refresh_rows(st);
+    g_autoptr(GFile) dir = NULL;
+    g_autoptr(GListModel) files = NULL;
+    GString *log = g_string_new(NULL);
+    int imported = 0;
+
+    if (folder)
+        dir = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, NULL);
+    else
+        files = gtk_file_dialog_open_multiple_finish(GTK_FILE_DIALOG(src), res, NULL);
+    for (guint i = 0; ; i++) {
+        g_autoptr(GFile) f = NULL;
+        g_autofree char *path = NULL;
+        char msg[1024];
+        if (folder) {
+            if (i > 0 || !dir)
+                break;
+            f = g_object_ref(dir);
+        } else {
+            if (!files || i >= g_list_model_get_n_items(files))
+                break;
+            f = g_list_model_get_item(files, i);
+        }
+        path = g_file_get_path(f);
+        if (!path)
+            continue;
+        if (astrosession_rom_import(st->session, path, msg, sizeof msg) == 0)
+            imported++;
+        g_string_append_printf(log, "%s%s", log->len ? "\n" : "", msg);
+    }
+    if (log->len) {
+        astro_window_toast(st->window, log->str);
+        astro_window_show_page(st->window);
+        refresh_rows(st);
+    }
+    g_string_free(log, TRUE);
 }
 
 static void on_rom_import(GtkButton *b, gpointer ud)
@@ -195,7 +221,7 @@ static void on_rom_import(GtkButton *b, gpointer ud)
     if (folder)
         gtk_file_dialog_select_folder(dlg, GTK_WINDOW(st->window), NULL, on_rom_chosen, st);
     else
-        gtk_file_dialog_open(dlg, GTK_WINDOW(st->window), NULL, on_rom_chosen, st);
+        gtk_file_dialog_open_multiple(dlg, GTK_WINDOW(st->window), NULL, on_rom_chosen, st);
     g_object_unref(dlg);
 }
 

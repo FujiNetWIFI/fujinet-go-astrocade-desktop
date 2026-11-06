@@ -139,22 +139,28 @@ static NSTextField *label(NSString *text, NSRect frame)
     const BOOL folder = [b tag] != 0;
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     [panel setMessage:folder ? @"Import BIOS from a Folder (MAME's astrocde set works)"
-                             : @"Import BIOS: an image or a zip"];
+                             : @"Import BIOS: images or zips"];
     [panel setCanChooseDirectories:folder];
     [panel setCanChooseFiles:!folder];
-    [panel setAllowsMultipleSelection:NO];
+    [panel setAllowsMultipleSelection:!folder];
     [panel beginSheetModalForWindow:_window completionHandler:^(NSModalResponse r) {
-        if (r != NSModalResponseOK || ![panel URL]) return;
-        NSURL *url = [panel URL];
+        if (r != NSModalResponseOK || ![[panel URLs] count]) return;
+        NSArray<NSURL *> *urls = [panel URLs];
         /* after the sheet: what came in is an alert of its own */
         dispatch_async(dispatch_get_main_queue(), ^{
-            char msg[1024];
-            msg[0] = '\0';
-            const int rc = astrosession_rom_import(self->_session, [url fileSystemRepresentation],
-                                                   msg, (int)sizeof msg);
+            NSMutableArray<NSString *> *log = [NSMutableArray array];
+            int imported = 0;
+            for (NSURL *url in urls) {
+                char msg[1024];
+                msg[0] = '\0';
+                if (astrosession_rom_import(self->_session, [url fileSystemRepresentation],
+                                            msg, (int)sizeof msg) == 0)
+                    imported++;
+                [log addObject:@(msg)];
+            }
             NSAlert *a = [[NSAlert alloc] init];
-            a.messageText = rc == 0 ? @"BIOS Imported" : @"Nothing Imported";
-            a.informativeText = @(msg);
+            a.messageText = imported ? @"BIOS Imported" : @"Nothing Imported";
+            a.informativeText = [log componentsJoinedByString:@"\n"];
             [a beginSheetModalForWindow:self->_window completionHandler:nil];
             [self refresh];
             if (self->_imported) self->_imported();
