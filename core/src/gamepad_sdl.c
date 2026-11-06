@@ -72,7 +72,8 @@ static int  s_pad_count;
 
 /* per-pad edge state, so a held button fires its binding once */
 typedef struct {
-    SDL_Gamepad *gp;
+    SDL_Gamepad *gp;      /* a device SDL maps as a gamepad ... */
+    SDL_Joystick *joy;    /* ... or any other joystick, read raw */
     SDL_JoystickID id;
     uint32_t btn_prev;   /* bitmask of buttons that were down last poll */
     uint32_t axis_prev;  /* axes that were past the capture threshold */
@@ -139,23 +140,60 @@ static void apply_target(acc *a, int target, int down, int edge)
     }
 }
 
-static float axis_norm(SDL_Gamepad *gp, int a)
+/* One poll's worth of a device, whichever API it came from. A raw joystick
+ * (one SDL has no gamepad mapping for -- an Astro-daptor, a generic USB
+ * adapter) is mapped like a gamepad: its buttons 0-31 are the pad buttons
+ * (button 0 = A = the default trigger), hat 0 the D-pad, axes 0-5 the six
+ * pad axes (0/1 steer, 2 is the default knob). */
+typedef struct {
+    uint32_t buttons;           /* bit n = pad button n down */
+    float axis[ASTRO_PAD_AXIS_COUNT];
+} pad_input;
+
+static float clampf(float v) { return v < -1.0f ? -1.0f : v > 1.0f ? 1.0f : v; }
+
+static void read_gamepad(SDL_Gamepad *gp, pad_input *in)
 {
-    float v = SDL_GetGamepadAxis(gp, k_axis_sdl[a]) / AXIS_MAX;
-    return v < -1.0f ? -1.0f : v > 1.0f ? 1.0f : v;
+    memset(in, 0, sizeof *in);
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; b++)
+        if (SDL_GetGamepadButton(gp, (SDL_GamepadButton)b))
+            in->buttons |= 1u << b;
+    for (int a = 0; a < ASTRO_PAD_AXIS_COUNT; a++)
+        in->axis[a] = clampf(SDL_GetGamepadAxis(gp, k_axis_sdl[a]) / AXIS_MAX);
+}
+
+static void read_joystick(SDL_Joystick *j, pad_input *in)
+{
+    const int nb = SDL_GetNumJoystickButtons(j), na = SDL_GetNumJoystickAxes(j);
+    memset(in, 0, sizeof *in);
+    for (int b = 0; b < nb && b < 32; b++)
+        if (SDL_GetJoystickButton(j, b))
+            in->buttons |= 1u << b;
+    if (SDL_GetNumJoystickHats(j) > 0) {
+        const Uint8 h = SDL_GetJoystickHat(j, 0);
+        if (h & SDL_HAT_UP)    in->buttons |= 1u << SDL_GAMEPAD_BUTTON_DPAD_UP;
+        if (h & SDL_HAT_DOWN)  in->buttons |= 1u << SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+        if (h & SDL_HAT_LEFT)  in->buttons |= 1u << SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+        if (h & SDL_HAT_RIGHT) in->buttons |= 1u << SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+    }
+    for (int a = 0; a < na && a < ASTRO_PAD_AXIS_COUNT; a++)
+        in->axis[a] = clampf(SDL_GetJoystickAxis(j, a) / AXIS_MAX);
 }
 
 static void apply_pad(pad_slot *slot, int player)
 {
-    SDL_Gamepad *gp = slot->gp;
+    pad_input in;
     acc a = { 0, 0, 0 };
 
+    if (slot->gp) read_gamepad(slot->gp, &in);
+    else          read_joystick(slot->joy, &in);
+
     /* ---- steering: the D-pad and the left stick always move the stick ---- */
-    int up = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_UP);
-    int down = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
-    int left = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_LEFT);
-    int right = SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
-    const float lx = axis_norm(gp, 0), ly = axis_norm(gp, 1);
+    int up = (in.buttons >> SDL_GAMEPAD_BUTTON_DPAD_UP) & 1;
+    int down = (in.buttons >> SDL_GAMEPAD_BUTTON_DPAD_DOWN) & 1;
+    int left = (in.buttons >> SDL_GAMEPAD_BUTTON_DPAD_LEFT) & 1;
+    int right = (in.buttons >> SDL_GAMEPAD_BUTTON_DPAD_RIGHT) & 1;
+    const float lx = in.axis[0], ly = in.axis[1];
     if (ly < -STICK_DEADZONE) up = 1;
     if (ly > STICK_DEADZONE) down = 1;
     if (lx < -STICK_DEADZONE) left = 1;
@@ -166,10 +204,7 @@ static void apply_pad(pad_slot *slot, int player)
     if (right) a.hand |= ASTROSESSION_HANDLE_RIGHT;
 
     /* ---- buttons -> bindings ---- */
-    uint32_t now = 0;
-    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; b++)
-        if (SDL_GetGamepadButton(gp, (SDL_GamepadButton)b))
-            now |= (1u << b);
+    const uint32_t now = in.buttons;
     const uint32_t pressed = now & ~slot->btn_prev;   /* rising edges */
     slot->btn_prev = now;
     for (int b = 0; b < 32; b++) {
@@ -186,7 +221,7 @@ static void apply_pad(pad_slot *slot, int player)
     /* ---- axes: a digital target fires at +50%; the knob follows one ---- */
     uint32_t over = 0;
     for (int ax = 0; ax < ASTRO_PAD_AXIS_COUNT; ax++) {
-        const float v = axis_norm(gp, ax);
+        const float v = in.axis[ax];
         const int id = ASTRO_PAD_AXIS_BASE + ax;
         if (fabsf(v) > 0.6f) over |= 1u << ax;
         if (s_capture_armed && ((over >> ax) & 1) && !((slot->axis_prev >> ax) & 1)) {
@@ -206,18 +241,20 @@ static void apply_pad(pad_slot *slot, int player)
 
     astro_input_pad_state(player, a.keys, player, a.hand, a.knobdir);
 
-    /* ---- the knob: an absolute axis (a trigger sweeps 0..1, a stick -1..1) */
+    /* ---- the knob: an absolute axis (a gamepad trigger sweeps 0..1; a
+     * stick, or any axis of a raw joystick, -1..1) ---- */
     const int kax = bindings_knob_axis(player);
     if (kax >= 0) {
         const int ax = kax - ASTRO_PAD_AXIS_BASE;
-        const float v = axis_norm(gp, ax);
-        const float u = (ax >= 4) ? v : (v + 1.0f) * 0.5f;
+        const float v = in.axis[ax];
+        const float u = (ax >= 4 && slot->gp) ? v : (v + 1.0f) * 0.5f;
         astro_input_pad_knob(player, player, (int)(u * 255.0f + 0.5f));
     }
 }
 
 /* A joystick SDL doesn't classify as a gamepad (SDL_IsGamepad() false) is
- * invisible to SDL_GetGamepads() and so silently drives nothing -- the
+ * invisible to SDL_GetGamepads(); the poll thread opens those as raw joysticks
+ * (see read_joystick). The
  * bundled community mapping DB (astro_gamecontrollerdb_text, loaded in
  * astro_gamepad_start()) covers most of these, but if one still slips
  * through, log its name/GUID once so it's diagnosable instead of doing
@@ -243,8 +280,9 @@ static void log_unrecognized_joysticks(SDL_JoystickID *seen, int *seen_count)
         char guid_str[64];
         SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid_str, sizeof guid_str);
         fprintf(stderr,
-                "astro_gamepad: joystick '%s' (GUID %s) is connected but not "
-                "recognized as a gamepad; no mapping available for it\n",
+                "astro_gamepad: joystick '%s' (GUID %s) has no gamepad mapping; "
+                "using it as a raw joystick (button 0 = trigger, axes 0/1 = "
+                "stick, axis 2 = knob)\n",
                 name ? name : "?", guid_str);
     }
     SDL_free(jids);
@@ -266,19 +304,24 @@ static void *poll_thread(void *arg)
 
         /* refresh the open set: assign the first MAX_PADS gamepads to slots */
         int count = 0;
-        SDL_JoystickID *ids = SDL_GetGamepads(&count);
+        SDL_JoystickID *ids = SDL_GetJoysticks(&count);   /* gamepads and raw joysticks */
         for (int i = 0; i < MAX_PADS; i++) {
             SDL_JoystickID want = (i < count) ? ids[i] : 0;
             if (slots[i].id != want) {
                 if (slots[i].gp) { SDL_CloseGamepad(slots[i].gp); slots[i].gp = NULL; }
+                if (slots[i].joy) { SDL_CloseJoystick(slots[i].joy); slots[i].joy = NULL; }
                 astro_input_pad_clear(i);
                 slots[i].id = want;
                 slots[i].btn_prev = 0;
                 slots[i].axis_prev = 0;
-                if (want)
-                    slots[i].gp = SDL_OpenGamepad(want);
+                if (want) {
+                    if (SDL_IsGamepad(want))
+                        slots[i].gp = SDL_OpenGamepad(want);
+                    if (!slots[i].gp)
+                        slots[i].joy = SDL_OpenJoystick(want);
+                }
             }
-            if (slots[i].gp)
+            if (slots[i].gp || slots[i].joy)
                 apply_pad(&slots[i], i);
         }
         SDL_free(ids);
@@ -286,8 +329,9 @@ static void *poll_thread(void *arg)
         pthread_mutex_lock(&s_info_mtx);
         s_pad_count = 0;
         for (int i = 0; i < MAX_PADS; i++)
-            if (slots[i].gp) {
-                const char *nm = SDL_GetGamepadName(slots[i].gp);
+            if (slots[i].gp || slots[i].joy) {
+                const char *nm = slots[i].gp ? SDL_GetGamepadName(slots[i].gp)
+                                             : SDL_GetJoystickName(slots[i].joy);
                 snprintf(s_pad_name[s_pad_count], sizeof s_pad_name[0], "%s",
                          nm ? nm : "Gamepad");
                 s_pad_count++;
@@ -310,6 +354,8 @@ static void *poll_thread(void *arg)
     for (int i = 0; i < MAX_PADS; i++) {
         if (slots[i].gp)
             SDL_CloseGamepad(slots[i].gp);
+        if (slots[i].joy)
+            SDL_CloseJoystick(slots[i].joy);
         astro_input_pad_clear(i);
     }
     pthread_mutex_lock(&s_info_mtx);
@@ -324,7 +370,10 @@ int astro_gamepad_start(astrosession *s)
         return 0;
     s_session = s;
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
-    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD))
+    /* the poll thread is not the focused window: keep reading pads when the
+     * app is in the background (the debugger or another window has focus) */
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK))
         return -1;
 
     /* layer the community mapping DB over SDL's own bundled one -- best
@@ -338,7 +387,7 @@ int astro_gamepad_start(astrosession *s)
     s_running = 1;
     if (pthread_create(&s_thread, NULL, poll_thread, NULL) != 0) {
         s_running = 0;
-        SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+        SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
         return -1;
     }
     return 0;
@@ -350,7 +399,7 @@ void astro_gamepad_stop(void)
         return;
     s_running = 0;
     pthread_join(s_thread, NULL);
-    SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+    SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
     s_session = NULL;
 }
 
