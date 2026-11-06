@@ -39,6 +39,8 @@ extern "C" {
 #define ASTROSESSION_AUDIO_RATE 48000
 
 typedef struct astrosession astrosession;
+/* The Z80 debugger engine (astrodebug.h). */
+typedef struct astrodebug astrodebug;
 
 /* All members optional (NULL = default).
  *  config_dir: default $XDG_CONFIG_HOME/fujinet-go-astrocade
@@ -143,6 +145,10 @@ const char *astrosession_roms_path(const astrosession *s);
 /* ---- lifecycle ---------------------------------------------------------- */
 int  astrosession_start(astrosession *s, const astrosession_start_opts *opts);
 void astrosession_stop(astrosession *s);
+
+/* The debugger engine (astrodebug.h): one per process, created on first use,
+ * alive across session restarts with its breakpoints and attach state. */
+astrodebug *astrosession_debugger(astrosession *s);
 int  astrosession_is_running(const astrosession *s);
 const char *astrosession_last_error(const astrosession *s);
 

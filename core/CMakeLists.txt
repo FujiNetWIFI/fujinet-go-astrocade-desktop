@@ -34,6 +34,11 @@ set(ASTRO_CORE_SOURCES
   astro/host.c
   astro/fujinet_cart.c
   debugger/debugger.c
+  debugger/prompt.c
+  debugger/expr.c
+  debugger/symbols.c
+  debugger/symbols_builtin.c
+  debugger/z80dasm.c
   debugger/fujitrace.c
   debugger/vidview.c
   "${GEN}/fujimail.c"
@@ -76,7 +81,9 @@ endif()
 # our own modules are warning-clean; the staged firmware sources are vendored.
 set_source_files_properties(
   astro/machine.c astro/video.c astro/sound.c astro/host.c astro/fujinet_cart.c
-  debugger/debugger.c debugger/fujitrace.c debugger/vidview.c
+  debugger/debugger.c debugger/prompt.c debugger/expr.c debugger/symbols.c
+  debugger/symbols_builtin.c debugger/z80dasm.c debugger/fujitrace.c
+  debugger/vidview.c
   PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # ---- the Bally system ROMs -------------------------------------------------
@@ -235,6 +242,12 @@ add_executable(input_test tests/input_test.c)
 target_link_libraries(input_test astro_session)
 target_include_directories(input_test PRIVATE src)
 add_test(NAME input_test COMMAND input_test)
+
+add_executable(rawjoy_test tests/rawjoy_test.c)
+target_link_libraries(rawjoy_test astro_session SDL3::SDL3)
+target_include_directories(rawjoy_test PRIVATE src)
+add_test(NAME rawjoy_test COMMAND rawjoy_test)
+set_tests_properties(rawjoy_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(hostport_test tests/hostport_test.c)
 target_link_libraries(hostport_test astro_session)

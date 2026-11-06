@@ -113,6 +113,18 @@ astro_machine_t *astro_host_machine(void);
 void astro_host_set_instr_hook(void (*hook)(astro_machine_t *m, void *user),
                                void *user);
 
+/* Bus-access hook (memory read/write, IN, OUT; see astro_machine.bus_hook in
+ * astro_internal.h). Machine thread. NULL removes it. */
+void astro_host_set_bus_hook(void (*hook)(astro_machine_t *m, int kind,
+                                          uint16_t addr, uint8_t data,
+                                          void *user),
+                             void *user);
+
+/* Publish the machine's framebuffer as it stands (the debugger shows the
+ * picture as far as the beam has drawn it when it stops mid-frame). Machine
+ * thread only -- it calls the frame callback. */
+void astro_host_publish_frame(void);
+
 #ifdef __cplusplus
 }
 #endif

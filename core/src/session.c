@@ -15,6 +15,7 @@
 
 #include "astro_internal.h"
 #include "astrodebug.h"
+#include "../debugger/debugger_internal.h"
 #include "bindings.h"
 #include "gamepad_sdl.h"
 #include "input.h"
@@ -266,6 +267,7 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
     /* The debugger's FujiNet trace is always on: it is cheap, and it is most
      * useful about what happened before anyone thought to look. */
     astrodebug_fujinet_install(astrodebug_get());
+    astrodebug_set_cart_path(astrodebug_get(), opts->cart_path);
 
     astro_host_opts_t hopts = {
         .bios = s->bios,
@@ -286,6 +288,12 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
     astro_gamepad_start(s);     /* best-effort; no-op without a gamepad */
     s->running = 1;
     return 0;
+}
+
+astrodebug *astrosession_debugger(astrosession *s)
+{
+    (void)s;
+    return astrodebug_get();
 }
 
 void astrosession_stop(astrosession *s)

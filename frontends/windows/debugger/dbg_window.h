@@ -1,5 +1,7 @@
 /*
- * The Win32 debugger window -- see dbg_window.c.
+ * The Win32 debugger window over the Astrocade Z80 debugger engine
+ * (astrodebug.h).
+ *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -10,6 +12,18 @@
 
 #include "astrosession.h"
 
+/* Show: created on first use, hidden (and detached, so the machine runs on)
+ * when closed. Showing it attaches the engine, which stops the machine, as
+ * the other frontends do, so there is something to look at. */
 void astro_debugger_show(HWND parent, astrosession *session);
 
-#endif
+/* F12 / View > Debugger: show, or hide and let the machine run. */
+void astro_debugger_toggle(HWND parent, astrosession *session);
+int  astro_debugger_visible(void);
+
+/* Accelerators (F5/F7/F8/Shift+F8/Shift+F7/F9/F12) for the main loop's
+ * pretranslate hook, so they work while a child control (an edit field,
+ * say) has the focus. Returns 1 when the message was consumed. */
+int astro_debugger_pretranslate(MSG *msg);
+
+#endif /* ASTRO_WIN_DBG_WINDOW_H */

@@ -177,7 +177,6 @@ static void on_rom_chosen(GObject *src, GAsyncResult *res, gpointer ud)
     g_autoptr(GFile) dir = NULL;
     g_autoptr(GListModel) files = NULL;
     GString *log = g_string_new(NULL);
-    int imported = 0;
 
     if (folder)
         dir = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, NULL);
@@ -199,8 +198,7 @@ static void on_rom_chosen(GObject *src, GAsyncResult *res, gpointer ud)
         path = g_file_get_path(f);
         if (!path)
             continue;
-        if (astrosession_rom_import(st->session, path, msg, sizeof msg) == 0)
-            imported++;
+        astrosession_rom_import(st->session, path, msg, sizeof msg);
         g_string_append_printf(log, "%s%s", log->len ? "\n" : "", msg);
     }
     if (log->len) {

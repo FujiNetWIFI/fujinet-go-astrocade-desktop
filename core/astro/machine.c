@@ -227,10 +227,14 @@ static void machine_tick(astro_machine_t *m)
         if (pins & Z80_RD)
         {
             Z80_SET_DATA(pins, mem_read(m, addr, true));
+            if (m->bus_hook && !(pins & Z80_M1))
+                m->bus_hook(m, 0, addr, Z80_GET_DATA(pins), m->bus_hook_user);
         }
         else if (pins & Z80_WR)
         {
             mem_write(m, addr, Z80_GET_DATA(pins));
+            if (m->bus_hook)
+                m->bus_hook(m, 1, addr, Z80_GET_DATA(pins), m->bus_hook_user);
         }
     }
     else if (pins & Z80_IORQ)
@@ -249,11 +253,15 @@ static void machine_tick(astro_machine_t *m)
         else if (pins & Z80_RD)
         {
             Z80_SET_DATA(pins, io_read(m, (uint8_t)(addr & 0xff)));
+            if (m->bus_hook)
+                m->bus_hook(m, 2, addr, Z80_GET_DATA(pins), m->bus_hook_user);
         }
         else if (pins & Z80_WR)
         {
             io_write(m, (uint8_t)(addr & 0xff), (uint8_t)(addr >> 8),
                      Z80_GET_DATA(pins));
+            if (m->bus_hook)
+                m->bus_hook(m, 3, addr, Z80_GET_DATA(pins), m->bus_hook_user);
         }
     }
 
@@ -326,7 +334,10 @@ void astro_machine_run_scanline(astro_machine_t *m)
         astro_video_render_line(m, m->scanline);
 
     if (++m->scanline >= ASTRO_LINES_PER_FRAME)
+    {
         m->scanline = 0;
+        m->frame++;
+    }
 }
 
 /* ---- debugger access ---- */
@@ -339,4 +350,20 @@ uint8_t astro_machine_peek(astro_machine_t *m, uint16_t addr)
 void astro_machine_poke(astro_machine_t *m, uint16_t addr, uint8_t data)
 {
     mem_write(m, addr, data);
+}
+
+void astro_machine_redirect(astro_machine_t *m, uint16_t pc)
+{
+    z80_t *c = &m->cpu;
+
+    c->hlx_idx = 0;
+    c->prefix_active = false;
+    c->int_bits = 0;
+    c->pc = (uint16_t)(pc + 1);
+    c->step = Z80_M1_T2;
+    m->pins &= ~(Z80_CTRL_PIN_MASK | Z80_HALT | 0xFFFFULL);
+    m->pins |= Z80_M1 | Z80_MREQ | Z80_RD;
+    Z80_SET_ADDR(m->pins, pc);
+    Z80_SET_DATA(m->pins, mem_read(m, pc, false));
+    c->pins = m->pins;
 }

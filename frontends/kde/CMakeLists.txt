@@ -25,7 +25,7 @@ set(KDE_SOURCES
   KeyForward.cpp
   keypad/KeypadWindow.cpp
   SettingsDialog.cpp
-  DebuggerWindow.cpp
+  debugger/DebuggerWindow.cpp
 )
 
 set(KDE_APP_ID online.fujinet.go.astrocade.kde)
@@ -65,6 +65,29 @@ if(Qt6Test_FOUND)
   target_compile_options(keypad_test PRIVATE -Wall -Wextra)
   add_test(NAME keypad_kde COMMAND keypad_test)
   set_tests_properties(keypad_kde PROPERTIES
+                       ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
+# The Debugger window (and F12 from the main window), on the offscreen
+# platform, against a running session whose RAM holds a hand-assembled loop.
+if(Qt6Test_FOUND)
+  add_executable(debugger_test debugger_test.cpp debugger/DebuggerWindow.cpp
+                 MainWindow.cpp DisplayWidget.cpp SoftDisplayWidget.cpp
+                 FrameFeed.cpp SettingsDialog.cpp KeyForward.cpp
+                 keypad/KeypadWindow.cpp)
+  set_target_properties(debugger_test PROPERTIES CXX_STANDARD 17)
+  target_link_libraries(debugger_test PRIVATE astro_session astro_core
+                        Qt6::Widgets Qt6::GuiPrivate Qt6::Test m)
+  qt_add_shaders(debugger_test "display_shaders_test"
+    PREFIX "/"
+    FILES shaders/display.vert shaders/display.frag)
+  target_include_directories(debugger_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                             "${CMAKE_SOURCE_DIR}/core/src")
+  target_compile_options(debugger_test PRIVATE -Wall -Wextra)
+  target_compile_definitions(debugger_test PRIVATE
+    ASTRO_APP_ID="${KDE_APP_ID}")
+  add_test(NAME debugger_kde COMMAND debugger_test)
+  set_tests_properties(debugger_kde PROPERTIES
                        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 

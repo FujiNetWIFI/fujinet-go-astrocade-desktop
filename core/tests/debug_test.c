@@ -1,16 +1,29 @@
 /*
- * debug_test -- the debugger engine against the running machine: pause,
- * read registers, single-step (PC advances), disassemble, a breakpoint that
- * fires, and the peek path leaving the cart mailbox undisturbed. Also pulls a
- * video-chip snapshot and confirms the BIOS-programmed registers are exposed,
- * and reads the FujiNet pane with no FujiNet listening.
+ * debug_test -- the debugger engine (astrodebug.h) against the running
+ * machine. Modelled on the ADAM desktop's debug_boot_test:
  *
- * Needs a BIOS (exits 77 / ctest SKIP otherwise).
+ *   attach stops the machine; step / over / out / run-to / scanline / frame;
+ *   registers read and edited (PC redirect); execute breakpoints with reason
+ *   strings, hit counts and conditions; read/write/IN/OUT watchpoints (and
+ *   READ ignoring the instruction's own fetches); disassembly lines, labels
+ *   and port names; the console; symbol files; save kinds; the memory map;
+ *   detach resumes and takes the hooks out;
+ *   and the two regressions that motivated the engine's rewrite:
+ *     1. stopping and restarting the host while the machine is PARKED must
+ *        not hang (a SIGALRM watchdog fails the test instead of the CI job);
+ *     2. after a restart with the engine attached, the new machine stops at
+ *        its first instruction and breakpoints still fire.
+ *
+ * A tiny hand-assembled program in RL64 expansion RAM is the test subject
+ * (interrupts off), so every address and stop below is exact; the real BIOS
+ * boots the machine around it. Needs a BIOS (exits 77 / ctest SKIP otherwise).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <signal.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -22,127 +35,679 @@
 #include "host.h"
 
 static int failures;
-#define CHECK(c, m) do { if (!(c)) { fprintf(stderr, "FAIL: %s\n", m); failures++; } } while (0)
+#define CHECK(c, m) do { if (!(c)) { fprintf(stderr, "FAIL: %s (line %d)\n", m, __LINE__); failures++; } } while (0)
 
-/* spin until paused, up to ~1s */
-static int wait_paused(astrodebug *d)
+static void on_alarm(int sig)
 {
-    for (int i = 0; i < 200; i++) {
-        if (astrodebug_is_paused(d))
+    static const char msg[] = "FAIL: watchdog fired -- the test hung\n";
+    (void)sig;
+    if (write(2, msg, sizeof msg - 1) < 0) {}
+    _exit(1);
+}
+
+static astrodebug *D;
+
+static void sleep_ms(int ms) { usleep((useconds_t)ms * 1000); }
+
+static int wait_stopped(int ms)
+{
+    for (int i = 0; i < ms / 2; i++) {
+        if (astrodebug_is_stopped(D))
             return 1;
-        usleep(5 * 1000);
+        sleep_ms(2);
     }
-    return 0;
+    return astrodebug_is_stopped(D);
+}
+
+/* Issue `go` (an action that releases the machine) and wait for the next
+ * stop; 0 if it did not stop in time. */
+#define GO(stmt) (astrodebug_is_stopped(D) ? ((stmt), go_wait()) : 0)
+static int go_wait(void)
+{
+    sleep_ms(1);
+    return wait_stopped(3000);
+}
+
+static astrodebug_cpu cpu(void)
+{
+    astrodebug_cpu c;
+    astrodebug_cpu_get(D, &c);
+    return c;
+}
+
+static char reason[160];
+static int reason_pc;
+static const char *why(void)
+{
+    astrodebug_stop_reason(D, reason, sizeof reason, &reason_pc);
+    return reason;
+}
+
+static int stopped_at(int pc, const char *prefix)
+{
+    why();
+    return astrodebug_is_stopped(D) && cpu().pc == pc && reason_pc == pc &&
+           strncmp(reason, prefix, strlen(prefix)) == 0;
+}
+
+/* ---- the test program, at $8000 -------------------------------------------
+ *   8000 3E 5A        LD A,$5A
+ *   8002 D3 10        OUT ($10),A        sound register 0
+ *   8004 32 00 41     LD ($4100),A       screen RAM
+ *   8007 CD 20 80     CALL $8020
+ *   800A 3A 00 41     LD A,($4100)
+ *   800D DB 10        IN A,($10)         player 1 handle
+ *   800F 06 03        LD B,3
+ *   8011 10 FE        DJNZ $8011
+ *   8013 C3 13 80     JP $8013
+ *   8020 3E 11        LD A,$11
+ *   8022 C9           RET
+ */
+static const uint8_t prog[] = {
+    0x3E, 0x5A, 0xD3, 0x10, 0x32, 0x00, 0x41, 0xCD, 0x20, 0x80,
+    0x3A, 0x00, 0x41, 0xDB, 0x10, 0x06, 0x03, 0x10, 0xFE,
+    0xC3, 0x13, 0x80,
+};
+static const uint8_t sub[] = { 0x3E, 0x11, 0xC9 };
+
+/* Stopped: put the program's entry in place (interrupts off, a stack). */
+static void restart_prog(void)
+{
+    for (size_t i = 0; i < sizeof prog; i++)
+        astrodebug_write(D, (uint16_t)(0x8000 + i), prog[i]);
+    for (size_t i = 0; i < sizeof sub; i++)
+        astrodebug_write(D, (uint16_t)(0x8020 + i), sub[i]);
+    astrodebug_cpu_set(D, ASTRO_REG_IFF1, 0);
+    astrodebug_cpu_set(D, ASTRO_REG_IFF2, 0);
+    astrodebug_cpu_set(D, ASTRO_REG_SP, 0xFF00);
+    astrodebug_cpu_set(D, ASTRO_REG_PC, 0x8000);
+}
+
+static int has(const char *text, const char *needle)
+{
+    return strstr(text, needle) != NULL;
+}
+
+static int read_file_size(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long n;
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fclose(f);
+    return (int)n;
+}
+
+static int stop_cb_calls, stop_cb_kind;
+static void stop_cb(void *ud, int kind, uint16_t pc)
+{
+    (void)ud; (void)pc;
+    stop_cb_calls++;
+    stop_cb_kind = kind;
 }
 
 int main(int argc, char **argv)
 {
+    uint8_t bios[ASTRO_BIOS_SIZE];
+    char out[4096], err[128];
+    astrodebug_cpu c, c2;
+
     if (argc < 2)
         return 77;
-    uint8_t bios[ASTRO_BIOS_SIZE];
     FILE *f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "SKIP: no BIOS\n"); return 77; }
     if (fread(bios, 1, sizeof bios, f) != sizeof bios) { fclose(f); return 1; }
     fclose(f);
 
+    signal(SIGALRM, on_alarm);
+    alarm(120);
+
+    char tmpl[] = "/tmp/astro_debug_test_XXXXXX";
+    if (!mkdtemp(tmpl)) { fprintf(stderr, "mkdtemp failed\n"); return 1; }
+    char path[256];
+
     astro_host_opts_t opts = { .bios = bios, .cart = NULL, .cart_size = 0,
-                               .exp = ASTRO_EXP_NONE,
+                               .exp = ASTRO_EXP_RL64_RAM,
                                .boip_hostport = "127.0.0.1:1" };
-    astrodebug_fujinet_install(astrodebug_get());
-    if (astro_host_start(&opts) != 0) { fprintf(stderr, "start failed\n"); return 1; }
+    D = astrodebug_get();
+    astrodebug_fujinet_install(D);
+    astrodebug_set_stop_callback(D, stop_cb, NULL);
 
-    /* let it boot a moment so the BIOS has programmed the video registers */
-    usleep(300 * 1000);
+    /* ---- not running: the calls are harmless -------------------------------- */
+    CHECK(!astrodebug_is_stopped(D), "not stopped before the session starts");
+    CHECK(astrodebug_read(D, 0, (uint8_t[4]){0}, 4) == 0, "read answers 0 when off");
+    astrodebug_cpu_get(D, &c);
+    CHECK(c.pc == 0 && c.cycles == 0, "cpu_get is zeros when off");
 
-    astrodebug *d = astrodebug_get();
-    astrodebug_set_engaged(d, 1);
-    astrodebug_pause(d);
-    CHECK(wait_paused(d), "machine paused");
+    CHECK(astro_host_start(&opts) == 0, "host start");
+    sleep_ms(300);                       /* let the BIOS program the chip */
+    CHECK(!astrodebug_is_attached(D) && !astrodebug_is_stopped(D),
+          "running free when detached");
+    CHECK(astro_host_machine()->instr_hook == NULL &&
+          astro_host_machine()->bus_hook == NULL, "no hooks while detached");
 
-    astrodebug_regs regs;
-    CHECK(astrodebug_regs_get(d, &regs), "regs while paused");
-    CHECK(regs.im == 2, "BIOS is in IM 2");
-    uint16_t pc0 = regs.pc;
+    /* ---- attach stops ---------------------------------------------------------- */
+    unsigned gen0 = astrodebug_generation(D);
+    astrodebug_attach(D);
+    CHECK(wait_stopped(1000), "attach stops the machine");
+    CHECK(astrodebug_generation(D) != gen0, "attach bumps the generation");
+    CHECK(strcmp(why(), "stopped") == 0, "reason is \"stopped\"");
+    CHECK(stop_cb_calls >= 1 && stop_cb_kind == ASTRODBG_STOP_PAUSE, "stop callback fired (pause)");
+    CHECK(astro_host_machine()->instr_hook != NULL, "instruction hook installed");
+    CHECK(astro_host_machine()->bus_hook == NULL, "no bus hook without watchpoints");
+    c = cpu();
+    CHECK(c.im == 2, "the BIOS runs IM 2");
+    CHECK(reason_pc == c.pc, "stop reason address is the PC");
+    uint64_t cyc = c.cycles;
+    sleep_ms(50);
+    c2 = cpu();
+    CHECK(c2.pc == c.pc && c2.cycles == cyc, "parked: nothing advances");
 
-    /* single-step: PC must change (or at least the stop serial bump) */
-    uint64_t serial = astrodebug_stop_serial(d);
-    astrodebug_step(d);
-    for (int i = 0; i < 200 && astrodebug_stop_serial(d) == serial; i++)
-        usleep(5 * 1000);
-    CHECK(astrodebug_stop_serial(d) != serial, "step advanced the machine");
-    astrodebug_regs_get(d, &regs);
-    CHECK(regs.pc != pc0 || regs.im == 2, "PC moved after a step");
+    /* ---- registers -------------------------------------------------------------- */
+    restart_prog();
+    c = cpu();
+    CHECK(c.pc == 0x8000 && c.sp == 0xFF00 && !c.iff1, "cpu_set PC/SP/IFF1");
+    astrodebug_cpu_set(D, ASTRO_REG_BC, 0x1234);
+    astrodebug_cpu_set(D, ASTRO_FLAG_Z, 1);
+    astrodebug_cpu_set(D, ASTRO_REG_AF2, 0xABCD);
+    c = cpu();
+    CHECK(c.bc == 0x1234 && c.zf == 1 && c.af2 == 0xABCD, "BC, Z flag, AF' edits");
+    astrodebug_cpu_set(D, ASTRO_FLAG_Z, 0);
+    astrodebug_cpu_set(D, ASTRO_REG_BC, 0);
 
-    /* disassemble at PC */
-    astrodebug_dasm_line lines[4];
-    int n = astrodebug_disassemble(d, regs.pc, lines, 4);
-    CHECK(n == 4, "disassembled 4 instructions");
-    CHECK(lines[0].length >= 1 && lines[0].length <= 4, "sane instruction length");
+    /* ---- memory ------------------------------------------------------------------ */
+    uint8_t b[4];
+    CHECK(astrodebug_read(D, 0x8000, b, 4) == 4 && b[0] == 0x3E && b[1] == 0x5A, "read RAM");
+    uint8_t rom0;
+    astrodebug_read(D, 0x1500, &rom0, 1);
+    astrodebug_write(D, 0x1500, (uint8_t)(rom0 ^ 0xFF));
+    astrodebug_read(D, 0x1500, b, 1);
+    CHECK(b[0] == rom0, "a write to ROM is dropped");
 
-    /* peek must be non-destructive: read the same byte twice, identical */
-    uint8_t b1, b2;
-    astrodebug_read(d, 0x0000, &b1, 1);
-    astrodebug_read(d, 0x0000, &b2, 1);
-    CHECK(b1 == b2, "peek is repeatable (non-destructive)");
-    CHECK(b1 == bios[0], "peek reads BIOS byte 0");
+    /* ---- stepping ------------------------------------------------------------------ */
+    unsigned g = astrodebug_generation(D);
+    CHECK(GO(astrodebug_step(D)), "step stops");
+    CHECK(stopped_at(0x8002, "step"), "step: LD A,n -> $8002, reason \"step\"");
+    CHECK(astrodebug_generation(D) != g, "step bumps the generation");
+    c = cpu();
+    CHECK((c.af >> 8) == 0x5A, "the step executed LD A,$5A");
+    CHECK(GO(astrodebug_step(D)) && stopped_at(0x8004, "step"), "step OUT");
+    CHECK(GO(astrodebug_step(D)) && stopped_at(0x8007, "step"), "step LD (nn),A");
+    {
+        uint8_t v;
+        astrodebug_read(D, 0x4100, &v, 1);
+        CHECK(v == 0x5A, "LD ($4100),A reached screen RAM");
+    }
+    CHECK(GO(astrodebug_step(D)) && stopped_at(0x8020, "step"), "step into the CALL");
+    CHECK(cpu().sp == 0xFEFE, "CALL pushed the return address");
+    CHECK(GO(astrodebug_step_out(D)) && stopped_at(0x800A, "step out"),
+          "step out returns to $800A");
 
-    /* Breakpoint: the hook fires between instructions (PC = the next one), so
-     * a useful breakpoint is one the running code revisits. Step through the
-     * BIOS a while, find a PC that recurs (its wait/attract loop), set a
-     * breakpoint there, resume, and confirm it stops exactly there. */
-    static uint16_t seen[4096];
-    int nseen = 0;
-    uint16_t loop_pc = 0;
-    int found = 0;
-    for (int i = 0; i < 4096 && !found; i++) {
-        astrodebug_regs_get(d, &regs);
-        for (int j = 0; j < nseen; j++)
-            if (seen[j] == regs.pc) { loop_pc = regs.pc; found = 1; break; }
-        if (!found) {
-            seen[nseen++] = regs.pc;
-            uint64_t s = astrodebug_stop_serial(d);
-            astrodebug_step(d);
-            for (int k = 0; k < 200 && astrodebug_stop_serial(d) == s; k++)
-                usleep(2 * 1000);
+    restart_prog();
+    astrodebug_cpu_set(D, ASTRO_REG_PC, 0x8007);
+    CHECK(GO(astrodebug_step_over(D)) && stopped_at(0x800A, "step over"),
+          "step over a CALL lands after it");
+    CHECK(cpu().sp == 0xFF00, "the call returned (SP balanced)");
+    CHECK(GO(astrodebug_step_over(D)) && stopped_at(0x800D, "step"),
+          "step over a plain instruction is a step");
+    astrodebug_cpu_set(D, ASTRO_REG_PC, 0x8011);
+    astrodebug_cpu_set(D, ASTRO_REG_B, 3);
+    CHECK(GO(astrodebug_step_over(D)) && stopped_at(0x8013, "step over"),
+          "step over DJNZ runs the loop out");
+    CHECK(cpu().sp == 0xFF00, "SP intact");
+
+    /* ---- run to ---------------------------------------------------------------------- */
+    restart_prog();
+    CHECK(GO(astrodebug_run_to(D, 0x800D)) && stopped_at(0x800D, "run to"), "run to $800D");
+    CHECK(stop_cb_kind == ASTRODBG_STOP_RUNTO, "stop callback kind run-to");
+
+    /* ---- execute breakpoints and hit counts ------------------------------------------- */
+    restart_prog();
+    astrodebug_breakpoint_clear(D);
+    CHECK(astrodebug_breakpoint_toggle(D, 0x8011) == 1, "toggle sets");
+    CHECK(astrodebug_breakpoint_check(D, 0x8011) == 1, "check sees it");
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8011, "breakpoint: exec $8011"),
+          "exec breakpoint, reason string");
+    CHECK(stop_cb_kind == ASTRODBG_STOP_BREAKPOINT, "stop callback kind breakpoint");
+    CHECK(cpu().sp == 0xFF00 && (cpu().bc >> 8) == 3, "stopped BEFORE DJNZ ran (B=3)");
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8011, "breakpoint: exec $8011") &&
+          (cpu().bc >> 8) == 2, "second hit (B=2)");
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8011, "breakpoint: exec $8011") &&
+          (cpu().bc >> 8) == 1, "third hit (B=1)");
+    {
+        astrodebug_breakpoint bp[8];
+        int n = astrodebug_breakpoint_list(D, bp, 8);
+        CHECK(n == 1 && bp[0].hits == 3 && bp[0].type == ASTRODEBUG_BP_EXEC &&
+              bp[0].enabled, "hit count 3 in the list");
+        astrodebug_breakpoint_enable(D, bp[0].id, 0);
+    }
+    CHECK(astrodebug_breakpoint_check(D, 0x8011) == 1, "a disabled breakpoint still checks");
+    {
+        astrodebug_line ln[2];
+        astrodebug_disassemble(D, 0x8011, ln, 1, NULL);
+        CHECK(ln[0].has_breakpoint && !ln[0].breakpoint_enabled, "line shows a disabled breakpoint");
+    }
+    CHECK(GO(astrodebug_run_to(D, 0x8013)) && stopped_at(0x8013, "run to"),
+          "a disabled breakpoint does not stop");
+    CHECK(astrodebug_breakpoint_toggle(D, 0x8011) == 0, "toggle removes");
+
+    /* ---- conditions ---------------------------------------------------------------------- */
+    {
+        int id;
+        astrodebug_breakpoint bp[8];
+        astrodebug_breakpoint_clear(D);
+        restart_prog();
+        id = astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, 0x8011, 0x8011,
+                                       "b == 1", err, sizeof err);
+        CHECK(id > 0, "conditional breakpoint added");
+        CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8011, "breakpoint: exec $8011") &&
+              (cpu().bc >> 8) == 1, "condition true only on the last pass");
+        astrodebug_breakpoint_list(D, bp, 8);
+        CHECK(bp[0].hits == 1, "false passes are not hits");
+        astrodebug_breakpoint_clear(D);
+
+        id = astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, 0x8011, 0x8011,
+                                       "b == 99", err, sizeof err);
+        CHECK(id > 0, "false-condition breakpoint added");
+        restart_prog();
+        CHECK(GO(astrodebug_run_to(D, 0x8013)) && stopped_at(0x8013, "run to"),
+              "a false condition never stops");
+        astrodebug_breakpoint_clear(D);
+
+        id = astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, 0x8000, 0x8000,
+                                       "1 +", err, sizeof err);
+        CHECK(id < 0 && err[0], "an unparsable condition is rejected with a reason");
+        id = astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, 0x8000, 0x8000,
+                                       "nosuchname == 1", err, sizeof err);
+        CHECK(id < 0, "an unknown name is rejected");
+        id = astrodebug_breakpoint_add(D, ASTRODEBUG_BP_OUT, 0x100, 0x100, NULL,
+                                       err, sizeof err);
+        CHECK(id < 0 && has(err, "255"), "ports above 255 rejected");
+
+        /* a condition that fails at run time stops rather than hides */
+        id = astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, 0x8011, 0x8011,
+                                       "1 / (a - a)", err, sizeof err);
+        CHECK(id > 0, "division by zero parses");
+        restart_prog();
+        CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8011, "breakpoint: exec $8011"),
+              "a condition that cannot be evaluated stops");
+        astrodebug_breakpoint_clear(D);
+    }
+
+    /* ---- watchpoints ------------------------------------------------------------------------ */
+    astrodebug_breakpoint_clear(D);
+    CHECK(astro_host_machine()->bus_hook == NULL, "bus hook removed with the last watchpoint");
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4100, 0x4100, NULL, err, sizeof err) > 0,
+          "write watch on screen RAM");
+    CHECK(astro_host_machine()->bus_hook != NULL, "bus hook installed for a watchpoint");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8007, "write $4100 = $5A"),
+          "write watch stops AFTER the instruction");
+    CHECK(stop_cb_kind == ASTRODBG_STOP_WATCH, "stop callback kind watch");
+    astrodebug_breakpoint_clear(D);
+
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_OUT, 0x10, 0x10, NULL, err, sizeof err) > 0,
+          "OUT watch on a data-chip/sound port");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8004, "out $10 <- $5A"),
+          "OUT watch: port, direction, value");
+    astrodebug_breakpoint_clear(D);
+
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_OUT, 0x08, 0x0F, "value >= 0", err, sizeof err) > 0,
+          "OUT watch over a port range with a condition");
+    astrodebug_breakpoint_clear(D);
+
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_IN, 0x10, 0x13, NULL, err, sizeof err) > 0, "IN watch");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x800F, "in $10 -> $"), "IN watch stops after IN");
+    astrodebug_breakpoint_clear(D);
+
+    /* READ: a data read stops; the instruction's own fetches do not */
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_READ, 0x8000, 0x801F, NULL, err, sizeof err) > 0,
+          "read watch over the code itself");
+    restart_prog();
+    CHECK(GO(astrodebug_run_to(D, 0x8013)) && stopped_at(0x8013, "run to"),
+          "opcode and operand fetches are not READ hits");
+    astrodebug_breakpoint_clear(D);
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_READ, 0x4100, 0x4100, NULL, err, sizeof err) > 0,
+          "read watch on $4100");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x800D, "read $4100 = $5A"),
+          "a data read stops after LD A,(nn)");
+    astrodebug_breakpoint_clear(D);
+
+    /* a conditional write watch: value decides */
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4000, 0x4FFF, "value == $99", err, sizeof err) > 0,
+          "conditional write watch");
+    restart_prog();
+    CHECK(GO(astrodebug_run_to(D, 0x8013)) && stopped_at(0x8013, "run to"),
+          "a watch whose condition is false does not stop");
+    astrodebug_breakpoint_clear(D);
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4000, 0x4FFF, "value == $5A && addr == $4100", err, sizeof err) > 0,
+          "value and addr in conditions");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8007, "write $4100 = $5A"), "... and it hits");
+    astrodebug_breakpoint_clear(D);
+
+    /* ---- beam: scanline / frame ----------------------------------------------------------------- */
+    restart_prog();
+    astrodebug_cpu_set(D, ASTRO_REG_PC, 0x8013);
+    c = cpu();
+    CHECK(GO(astrodebug_scanline(D, 3)), "scanline stops");
+    why();
+    CHECK(strcmp(reason, "scanline") == 0, "reason \"scanline\"");
+    c2 = cpu();
+    CHECK(c2.line == (c.line + 3) % 262, "three lines later (wrapping at 261)");
+    CHECK(c2.cycles > c.cycles, "cycles advanced");
+    c = cpu();
+    CHECK(GO(astrodebug_frame(D, 1)), "frame stops");
+    why();
+    CHECK(strcmp(reason, "frame") == 0, "reason \"frame\"");
+    c2 = cpu();
+    CHECK(c2.frame == c.frame + 1 && c2.line == 0, "one frame, on the boundary (line 0)");
+    CHECK(GO(astrodebug_frame(D, 2)), "two frames");
+    CHECK(cpu().frame == c2.frame + 2, "frame count +2");
+
+    /* ---- disassembly ---------------------------------------------------------------------------------- */
+    restart_prog();
+    astrodebug_set_label(D, 0x8020, "subr");
+    {
+        astrodebug_line ln[12];
+        int pcl = -9;
+        int n = astrodebug_disassemble(D, 0x8000, ln, 12, &pcl);
+        CHECK(n == 12, "12 lines");
+        CHECK(pcl == 0 && ln[0].is_pc && !ln[1].is_pc, "is_pc and pc_line");
+        CHECK(strcmp(ln[0].disasm, "LD A,$5A") == 0 && strcmp(ln[0].bytes, "3E 5A") == 0 &&
+              ln[0].length == 2, "LD A,n line");
+        CHECK(has(ln[1].disasm, "OUT") && has(ln[1].comment, "TONMO"), "OUT line: port name comment");
+        CHECK(ln[3].flags & ASTRODASM_CALL && ln[3].target == 0x8020 &&
+              strcmp(ln[3].comment, "subr") == 0, "CALL line: flag, target, label comment");
+        CHECK(has(ln[5].disasm, "IN") && has(ln[5].comment, "SW0"), "IN line: port name");
+        CHECK((ln[7].flags & (ASTRODASM_JUMP | ASTRODASM_RELATIVE | ASTRODASM_COND)) ==
+              (ASTRODASM_JUMP | ASTRODASM_RELATIVE | ASTRODASM_COND), "DJNZ flags");
+        n = astrodebug_disassemble(D, 0x8020, ln, 3, &pcl);
+        CHECK(pcl == -1, "pc_line -1 when the PC is not among the lines");
+        CHECK(strcmp(ln[0].label, "subr") == 0, "label at the line's address");
+        CHECK(ln[1].flags & ASTRODASM_RET, "RET flag");
+        CHECK(astrodebug_address_label(D, 0x8020, out, sizeof out) == 4 && !strcmp(out, "subr"), "address_label");
+        CHECK(astrodebug_label_address(D, "subr") == 0x8020 &&
+              astrodebug_label_address(D, "nosuch") == -1, "label_address");
+        astrodebug_breakpoint_toggle(D, 0x8004);
+        astrodebug_disassemble(D, 0x8004, ln, 1, NULL);
+        CHECK(ln[0].has_breakpoint && ln[0].breakpoint_enabled, "breakpoint shown on its line");
+        astrodebug_breakpoint_clear(D);
+    }
+    CHECK(astrodebug_row_address(D, 0x8007, 2) == 0x800D, "row_address forward");
+    CHECK(astrodebug_row_address(D, 0x800D, -2) == 0x8007, "row_address backward");
+    CHECK(astrodebug_row_address(D, 0x8007, 0) == 0x8007, "row_address zero");
+
+    /* ---- the console ----------------------------------------------------------------------------------- */
+    astrodebug_command(D, "help", out, sizeof out);
+    CHECK(has(out, "step") && has(out, "bpin") && has(out, "scanline"), "help lists commands");
+    astrodebug_command(D, "break $8011 b == 2", out, sizeof out);
+    CHECK(has(out, "breakpoint #"), "break command");
+    astrodebug_command(D, "bpw $4000-$40FF", out, sizeof out);
+    CHECK(has(out, "breakpoint #"), "bpw command");
+    astrodebug_command(D, "bpout $10", out, sizeof out);
+    astrodebug_command(D, "breaks", out, sizeof out);
+    CHECK(has(out, "$8011") && has(out, "if b == 2") && has(out, "$4000-$40FF") && has(out, "hits"),
+          "breaks lists them");
+    astrodebug_command(D, "clear", out, sizeof out);
+    astrodebug_command(D, "breaks", out, sizeof out);
+    CHECK(has(out, "no breakpoints"), "clear");
+    astrodebug_command(D, "print 1+2*3", out, sizeof out);
+    CHECK(has(out, "$0007") && has(out, "7"), "print");
+    astrodebug_command(D, "print [$8000]", out, sizeof out);
+    CHECK(has(out, "$003E"), "print [addr]");
+    astrodebug_command(D, "print {$8000}", out, sizeof out);
+    CHECK(has(out, "$5A3E"), "print {addr}");
+    astrodebug_command(D, "print nosuch", out, sizeof out);
+    CHECK(has(out, "error"), "print error");
+    astrodebug_command(D, "regs", out, sizeof out);
+    CHECK(has(out, "PC=8000") && has(out, "SP=FF00"), "regs");
+    astrodebug_command(D, "set hl $BEEF", out, sizeof out);
+    CHECK(has(out, "HL=BEEF"), "set");
+    astrodebug_command(D, "mem $8000 4", out, sizeof out);
+    CHECK(has(out, "8000") && has(out, "3E 5A D3 10"), "mem");
+    astrodebug_command(D, "poke $9000 1 2 $FF", out, sizeof out);
+    CHECK(has(out, "3 bytes"), "poke");
+    astrodebug_command(D, "mem $9000 3", out, sizeof out);
+    CHECK(has(out, "01 02 FF"), "poke took");
+    astrodebug_command(D, "vpoke $10 $A5", out, sizeof out);
+    astrodebug_command(D, "vram $10 1", out, sizeof out);
+    CHECK(has(out, "A5"), "vpoke/vram");
+    astrodebug_command(D, "disasm $8000 3", out, sizeof out);
+    CHECK(has(out, ">") && has(out, "LD A,$5A") && has(out, "OUT"), "disasm");
+    astrodebug_command(D, "label $8013 spin", out, sizeof out);
+    astrodebug_command(D, "disasm $8013 1", out, sizeof out);
+    CHECK(has(out, "spin:"), "label command");
+    astrodebug_command(D, "trace on", out, sizeof out);
+    astrodebug_command(D, "step 3", out, sizeof out);
+    CHECK(has(out, "step") && has(out, "$8007"), "console step 3 says where it is");
+    astrodebug_command(D, "trace 8", out, sizeof out);
+    CHECK(has(out, "8002") && has(out, "8004") && has(out, "8007") && has(out, "OUT"), "trace lists instructions");
+    astrodebug_command(D, "trace clear", out, sizeof out);
+    astrodebug_command(D, "trace off", out, sizeof out);
+    {
+        astrodebug_trace tr[8];
+        CHECK(astrodebug_trace_read(D, tr, 8) == 0 && !astrodebug_trace_enabled(D), "trace clear/off");
+    }
+    astrodebug_command(D, "over", out, sizeof out);
+    CHECK(has(out, "step over") && has(out, "$800A"), "console over");
+    astrodebug_command(D, "runto $8013", out, sizeof out);
+    CHECK(has(out, "run to") && has(out, "$8013"), "console runto");
+    astrodebug_command(D, "frame", out, sizeof out);
+    CHECK(has(out, "frame"), "console frame");
+    astrodebug_command(D, "scanline 2", out, sizeof out);
+    CHECK(has(out, "scanline"), "console scanline");
+    astrodebug_command(D, "io", out, sizeof out);
+    CHECK(has(out, "$4000-$4FFF"), "console io");
+    astrodebug_command(D, "video", out, sizeof out);
+    CHECK(has(out, "MAGIC"), "console video");
+    astrodebug_command(D, "fujinet", out, sizeof out);
+    CHECK(out[0], "console fujinet");
+    astrodebug_command(D, "bogus", out, sizeof out);
+    CHECK(has(out, "unknown command"), "unknown command");
+    astrodebug_command(D, "stop", out, sizeof out);
+    CHECK(has(out, "$"), "stop while stopped says where");
+    {
+        char comp[1024];
+        int n = astrodebug_completions(D, "sc", comp, sizeof comp);
+        CHECK(n == 1 && has(comp, "scanline"), "command completion");
+        n = astrodebug_completions(D, "save ", comp, sizeof comp);
+        CHECK(n == 4, "save kind completion");
+        n = astrodebug_completions(D, "print h", comp, sizeof comp);
+        CHECK(has(comp, "hl"), "register completion");
+        long v;
+        CHECK(astrodebug_eval(D, "subr + 2", &v, err, sizeof err) == 0 && v == 0x8022, "eval with a label");
+        CHECK(astrodebug_eval(D, "[", &v, err, sizeof err) == -1 && err[0], "eval error");
+    }
+
+    /* ---- symbols ----------------------------------------------------------------------------------------- */
+    snprintf(path, sizeof path, "%s/t.sym", tmpl);
+    f = fopen(path, "w");
+    fputs("8011 LOOPTOP ; the djnz\n# comment\n8020 SUBX\n", f);
+    fclose(f);
+    {
+        char msg[300];
+        uint16_t addr = 0, off = 0;
+        CHECK(astrodebug_load_symbols(D, path, msg, sizeof msg) == 2 && has(msg, "2 labels"), "load a .sym");
+        CHECK(astrodebug_label_address(D, "LOOPTOP") == 0x8011, "symbol loaded");
+        CHECK(astrodebug_symbol_find(D, "SUBX", &addr) == 1 && addr == 0x8020, "symbol_find");
+        CHECK(astrodebug_symbol_at(D, 0x8012, &off) != NULL && off == 1, "symbol_at with offset");
+        CHECK(astrodebug_load_symbols(D, NULL, msg, sizeof msg) == -1 && msg[0],
+              "no cartridge file: a message, not a crash");
+        CHECK(astrodebug_label_address(D, "NORMEM") == 0x4000, "built-in table");
+        astrodebug_command(D, "break LOOPTOP", out, sizeof out);
+        CHECK(has(out, "breakpoint #"), "labels work as addresses");
+        astrodebug_command(D, "clear", out, sizeof out);
+        CHECK(astrodebug_symbols_load(D, "/nonexistent/x.sym", "x") < 0, "unreadable symbol file");
+    }
+
+    /* ---- save ------------------------------------------------------------------------------------------------ */
+    {
+        char msg[300];
+        snprintf(path, sizeof path, "%s/mem.bin", tmpl);
+        CHECK(astrodebug_save(D, "mem", path, msg, sizeof msg) == 0 && read_file_size(path) == 65536, "save mem");
+        snprintf(path, sizeof path, "%s/vram.bin", tmpl);
+        CHECK(astrodebug_save(D, "vram", path, msg, sizeof msg) == 0 && read_file_size(path) == 4096, "save vram");
+        snprintf(path, sizeof path, "%s/regs.txt", tmpl);
+        CHECK(astrodebug_save(D, "regs", path, msg, sizeof msg) == 0 && read_file_size(path) > 100, "save regs");
+        snprintf(path, sizeof path, "%s/dis.txt", tmpl);
+        CHECK(astrodebug_save(D, "dis", path, msg, sizeof msg) == 0 && read_file_size(path) > 10000, "save dis");
+        CHECK(astrodebug_save(D, "bogus", path, msg, sizeof msg) == -1 && has(msg, "Unknown"), "unknown kind");
+        CHECK(astrodebug_save(D, "mem", "/nonexistent/dir/x", msg, sizeof msg) == -1, "unwritable path");
+        astrodebug_command(D, "save regs /dev/null", out, sizeof out);
+        CHECK(has(out, "Saved"), "console save");
+    }
+
+    /* ---- memory map and I/O -------------------------------------------------------------------------------------- */
+    {
+        astrodebug_memmap mm;
+        astrodebug_memmap_get(D, &mm);
+        CHECK(mm.exp_bytes == 0xB000 && mm.exp_base == 0x5000 && mm.cart_present &&
+              mm.bios_name && mm.exp_name && has(mm.exp_name, "RL64"), "memmap");
+        CHECK(astrodebug_io_state(D, out, sizeof out) > 200 && has(out, "$0000-$0FFF") &&
+              has(out, "$2000-$3FFF") && has(out, "$4000-$4FFF") && has(out, "RL64"), "io_state");
+    }
+
+    /* ---- FujiNet (no listener, nothing traced) ------------------------------------------------------------------------- */
+    {
+        static astrodebug_fuji_packet pk[8];
+        char state[1024];
+        CHECK(astrodebug_fujinet_trace(D, pk, 8) == 0, "no FujiBus packets without a link");
+        astrodebug_fujinet_state(D, state, sizeof state);
+        CHECK(has(state, "BoIP link     not connected"), "state shows the link down");
+        astrodebug_fujinet_trace_clear(D);
+    }
+
+    /* the video snapshot the debugger's Video tab uses */
+    {
+        astrovid_snapshot *snap = malloc(sizeof *snap);
+        astrovid_snapshot_get(snap);
+        CHECK(snap->interrupt_scanline != 0 || snap->vblank != 0, "video chip registers exposed");
+        free(snap);
+    }
+
+    /* ---- detach resumes ----------------------------------------------------------------------------------------------------- */
+    astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4000, 0x4000, NULL, err, sizeof err);
+    {
+        uint64_t f0 = astro_host_frame_count();
+        astrodebug_detach(D);
+        CHECK(!astrodebug_is_attached(D) && !astrodebug_is_stopped(D), "detach: running");
+        CHECK(astro_host_machine()->instr_hook == NULL && astro_host_machine()->bus_hook == NULL,
+              "detach takes every hook out of the core");
+        sleep_ms(200);
+        CHECK(astro_host_frame_count() > f0 + 3, "the machine runs on after detach");
+        why();
+        CHECK(strcmp(reason, "running") == 0 && reason_pc == -1, "reason while running");
+    }
+    astrodebug_breakpoint_clear(D);
+
+    /* ---- stop() while running, then resume -------------------------------------------------------------------------------------- */
+    astrodebug_stop(D);                 /* detached: attaches and stops */
+    CHECK(wait_stopped(1000), "stop() when detached attaches and stops");
+    astrodebug_resume(D);
+    sleep_ms(50);
+    CHECK(!astrodebug_is_stopped(D) && astrodebug_is_attached(D), "resume: running, still attached");
+    astrodebug_stop(D);
+    CHECK(wait_stopped(1000), "stop while running");
+
+    /* ---- REGRESSION 1: restart while parked must not hang ------------------------------------------------------------------------- */
+    CHECK(astrodebug_is_stopped(D), "parked");
+    {
+        uint16_t pcs[8];
+        int npc = 0;
+        alarm(15);
+        astro_host_stop();              /* used to pthread_join a parked thread forever */
+        alarm(120);
+        CHECK(!astro_host_is_running(), "host stopped while parked");
+        CHECK(astrodebug_is_attached(D), "the engine stays attached across the stop");
+        CHECK(!astrodebug_is_stopped(D), "nothing is parked in a dead machine");
+        astrodebug_cpu_get(D, &c);
+        CHECK(c.pc == 0 && c.cycles == 0, "no machine: cpu is zeros");
+        CHECK(astrodebug_read(D, 0, (uint8_t[2]){0}, 2) == 0, "no machine: read is 0");
+        astrodebug_command(D, "regs", out, sizeof out);       /* harmless */
+        astrodebug_command(D, "step", out, sizeof out);
+
+        /* a breakpoint set while there is no machine survives */
+        CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, 0x0100, 0x0100, NULL, err, sizeof err) > 0,
+              "breakpoint with no machine");
+        astrodebug_breakpoint_clear(D);
+
+        /* ---- REGRESSION 2: an attached engine stops the new machine at instruction one */
+        alarm(15);
+        CHECK(astro_host_start(&opts) == 0, "host restart");
+        CHECK(wait_stopped(2000), "restart: the attached engine stops the new machine");
+        alarm(120);
+        astrodebug_cpu_get(D, &c);
+        CHECK(c.pc == 0 && c.cycles < 100, "... at its first instruction");
+        CHECK(astro_host_machine()->instr_hook != NULL, "hooks re-installed after astro_machine_init");
+        CHECK(strcmp(why(), "stopped") == 0, "reason \"stopped\"");
+        /* learn the first instructions' addresses */
+        pcs[npc++] = (uint16_t)cpu().pc;
+        for (int i = 0; i < 6; i++) {
+            CHECK(GO(astrodebug_step(D)), "step after restart");
+            pcs[npc++] = (uint16_t)cpu().pc;
         }
+        /* restart again: a breakpoint (set now) fires in the third machine */
+        astro_host_stop();
+        astrodebug_breakpoint_add(D, ASTRODEBUG_BP_EXEC, pcs[4], pcs[4], NULL, err, sizeof err);
+        alarm(15);
+        CHECK(astro_host_start(&opts) == 0, "second restart");
+        CHECK(wait_stopped(2000) && cpu().pc == 0, "stopped at instruction one again");
+        alarm(120);
+        CHECK(GO(astrodebug_resume(D)) && astrodebug_is_stopped(D), "resume runs to the breakpoint");
+        snprintf(out, sizeof out, "breakpoint: exec $%04X", pcs[4]);
+        CHECK(stopped_at(pcs[4], out), "the breakpoint fires after a restart");
+
+        /* a watchpoint (bus hook) also survives a restart */
+        astrodebug_breakpoint_clear(D);
+        astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4000, 0x4FFF, NULL, err, sizeof err);
+        astro_host_stop();
+        alarm(15);
+        CHECK(astro_host_start(&opts) == 0, "third restart");
+        CHECK(wait_stopped(2000), "stopped again");
+        alarm(120);
+        CHECK(astro_host_machine()->bus_hook != NULL, "bus hook re-installed");
+        CHECK(GO(astrodebug_resume(D)), "BIOS writes screen RAM");
+        CHECK(has(why(), "write $4"), "write watch fires after a restart");
     }
-    CHECK(found, "found a recurring PC (a loop) to break on");
-    if (found) {
-        astrodebug_breakpoint_toggle(d, loop_pc);
-        CHECK(astrodebug_breakpoint_is_set(d, loop_pc), "breakpoint set");
-        serial = astrodebug_stop_serial(d);
-        astrodebug_resume(d);
-        for (int i = 0; i < 600 && astrodebug_stop_serial(d) == serial; i++)
-            usleep(5 * 1000);
-        CHECK(astrodebug_stop_serial(d) != serial, "breakpoint fired");
-        if (astrodebug_regs_get(d, &regs))
-            CHECK(regs.pc == loop_pc, "stopped exactly at the breakpoint");
-        astrodebug_breakpoint_clear_all(d);
-    }
 
-    /* the video snapshot exposes the BIOS-programmed registers */
-    astrovid_snapshot snap;
-    astrovid_snapshot_get(&snap);
-    CHECK(snap.interrupt_scanline != 0, "INLIN exposed (BIOS set it)");
-    CHECK(snap.vblank != 0, "VERBL exposed");
-    char text[2048];
-    astrovid_format_state(&snap, text, sizeof text);
-    CHECK(strstr(text, "MAGIC") != NULL, "state text mentions the magic register");
-    CHECK(strstr(text, "INLIN") != NULL, "state text lists INLIN");
-
-    /* FujiNet: no listener, so no link, nothing sent, nothing traced */
-    static astrodebug_fuji_packet pk[8];
-    char state[1024];
-    CHECK(astrodebug_fujinet_trace(d, pk, 8) == 0, "no FujiBus packets without a link");
-    astrodebug_fujinet_state(d, state, sizeof state);
-    CHECK(strstr(state, "BoIP link     not connected") != NULL, "state shows the link down");
-    CHECK(strstr(state, "Mailbox       live") != NULL, "CONFIG claims the mailbox");
-
-    astrodebug_set_engaged(d, 0);
+    /* a restart while RUNNING (attached, resumed) is fine too */
+    astrodebug_breakpoint_clear(D);
+    astrodebug_resume(D);
+    sleep_ms(30);
+    alarm(15);
     astro_host_stop();
-    astrodebug_fujinet_state(d, state, sizeof state);
-    CHECK(strcmp(state, "The Astrocade is off\n") == 0, "state once stopped");
+    CHECK(astro_host_start(&opts) == 0, "restart while running");
+    alarm(120);
+    CHECK(wait_stopped(2000), "... still stops at instruction one");
 
+    /* detach with the machine stopped; then stop the host; then attach with no
+     * machine: it stops the machine as soon as it exists */
+    astrodebug_detach(D);
+    CHECK(!astrodebug_is_stopped(D), "detach released the parked thread");
+    alarm(15);
+    astro_host_stop();
+    astrodebug_attach(D);
+    CHECK(astrodebug_is_attached(D) && !astrodebug_is_stopped(D), "attach before start: pending");
+    CHECK(astro_host_start(&opts) == 0, "start");
+    CHECK(wait_stopped(2000) && cpu().pc == 0, "attach-before-start stops at the first instruction");
+    alarm(120);
+
+    astrodebug_detach(D);
+    astro_host_stop();
+    astrodebug_set_stop_callback(D, NULL, NULL);
+    astrodebug_fujinet_state(D, out, sizeof out);
+    CHECK(strcmp(out, "The Astrocade is off\n") == 0, "state once stopped");
+
+    {
+        char cmd[300];
+        snprintf(cmd, sizeof cmd, "rm -rf '%s'", tmpl);
+        if (system(cmd) != 0) {}
+    }
     fprintf(stderr, "debug_test: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

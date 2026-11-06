@@ -13,9 +13,11 @@
 #import "AppDelegate.h"
 
 #import "AstroKeyForward.h"
-#import "DebuggerWindow.h"
+#import "debugger/DebuggerWindow.h"
 #import "DisplayView.h"
 #import "SettingsWindow.h"
+
+#include <stdlib.h>
 
 #include "bindings.h"
 #import "keypad/KeypadWindow.h"
@@ -63,6 +65,8 @@
     [self showPage];
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+    if (getenv("ASTRO_OPEN_DEBUGGER"))
+        [DebuggerWindow showDebuggerForSession:_session];
 }
 
 /* In place of the picture until a BIOS is imported. */
@@ -169,7 +173,13 @@
     [menubar addItem:viewItem];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
     [view addItemWithTitle:@"Controllers" action:@selector(toggleKeypad:) keyEquivalent:@"k"].target = self;
-    [view addItemWithTitle:@"Debugger" action:@selector(showDebugger:) keyEquivalent:@""].target = self;
+    /* F12 toggles the debugger (Cmd+K is Controllers). A menu key equivalent is
+     * tried before the display view's keyDown, so the key never reaches the
+     * machine; the debugger window's own key monitor takes F12 there. */
+    NSMenuItem *dbgItem = [view addItemWithTitle:@"Debugger" action:@selector(toggleDebugger:)
+                                   keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey]];
+    dbgItem.target = self;
+    dbgItem.keyEquivalentModifierMask = 0;
     viewItem.submenu = view;
 
     NSMenuItem *fnItem = [[NSMenuItem alloc] init];
@@ -260,7 +270,7 @@
                             }];
 }
 
-- (void)showDebugger:(id)sender { (void)sender; [DebuggerWindow showDebuggerForSession:_session]; }
+- (void)toggleDebugger:(id)sender { (void)sender; [DebuggerWindow toggleDebuggerForSession:_session]; }
 - (void)resetGame:(id)sender { (void)sender; astrosession_reset_game(_session); }
 - (void)resetConfig:(id)sender { (void)sender; astrosession_reset_to_config(_session); }
 

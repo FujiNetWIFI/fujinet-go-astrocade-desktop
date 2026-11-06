@@ -118,7 +118,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
             gtk_window_fullscreen(GTK_WINDOW(self));
         return TRUE;
     case GDK_KEY_F12:
-        astro_debugger_show(GTK_WINDOW(self), self->session);
+        astro_debugger_toggle(GTK_WINDOW(self), self->session);
         return TRUE;
     case GDK_KEY_r:
     case GDK_KEY_R:
@@ -403,7 +403,7 @@ static void action_debugger(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)a; (void)p;
-    astro_debugger_show(GTK_WINDOW(self), self->session);
+    astro_debugger_toggle(GTK_WINDOW(self), self->session);
 }
 
 static void action_preferences(GSimpleAction *a, GVariant *p, gpointer user_data)

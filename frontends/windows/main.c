@@ -233,7 +233,7 @@ static void do_command(int id)
         break;
     case IDM_PREFS:         show_prefs(0); break;
     case IDM_KEYPAD:        toggle_keypad(); break;
-    case IDM_DEBUGGER:      astro_debugger_show(g_hwnd, g_session); break;
+    case IDM_DEBUGGER:      astro_debugger_toggle(g_hwnd, g_session); break;
     case IDM_RESET_GAME:    astrosession_reset_game(g_session); break;
     case IDM_RESET_CONFIG:  astrosession_reset_to_config(g_session); break;
     case IDM_FUJINET_CONFIG:
@@ -317,7 +317,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
         if (astro_controllers_visible() && astro_controllers_key(g_session, l, TRUE))
             return 0;
         if (w == VK_F9) { toggle_keypad(); return 0; }
-        if (w == VK_F12) { astro_debugger_show(g_hwnd, g_session); return 0; }
+        if (w == VK_F12) { astro_debugger_toggle(g_hwnd, g_session); return 0; }
         astro_controllers_key(g_session, l, TRUE);
         return 0;
     case WM_KEYUP:
@@ -426,7 +426,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         astro_fujilog_show(g_hwnd, g_session);
 
     MSG m;
-    while (GetMessage(&m, NULL, 0, 0)) {
+    while (GetMessage(&m, NULL, 0, 0) > 0) {
+        /* the debugger's F5/F7/F8/F9/F12 accelerators get first refusal while
+         * its window (or one of its fields) has the focus */
+        if (astro_debugger_pretranslate(&m))
+            continue;
         TranslateMessage(&m);
         DispatchMessage(&m);
     }

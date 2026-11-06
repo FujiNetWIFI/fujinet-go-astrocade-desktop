@@ -14,7 +14,6 @@ extern "C" {
 
 class DisplayView;
 class KeypadWindow;
-class DebuggerWindow;
 class QStackedWidget;
 
 class MainWindow : public QMainWindow {
@@ -34,7 +33,6 @@ private:
     void importBios(bool folder);
     QWidget *buildNoBiosPage();
     void toggleKeypad();
-    void showDebugger();
     void showSettings();
     void showToast(const QString &msg);
     void showFujinetLog();
@@ -45,7 +43,6 @@ private:
     QWidget *m_noBios = nullptr;
     DisplayView *m_display = nullptr;
     KeypadWindow *m_keypad = nullptr;
-    DebuggerWindow *m_debugger = nullptr;
     int m_sysactTimer = 0;
     void timerEvent(QTimerEvent *) override;
     void changeEvent(QEvent *) override;

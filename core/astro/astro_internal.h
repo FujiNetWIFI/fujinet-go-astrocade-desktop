@@ -154,6 +154,7 @@ struct astro_machine {
     int64_t dot;                /* absolute dot counter since power-on */
     int scanline;               /* current screen line, 0..261 */
     int line_dot;               /* dots consumed within the current line */
+    uint64_t frame;             /* frames completed since power-on */
 
     /* ---- inputs (active high, MAME astrohome.cpp / bus/astrocde/joy.cpp) ---- */
     uint8_t keypad[4];          /* column bytes for IN 0x14-0x17, bits 0-5 */
@@ -170,6 +171,16 @@ struct astro_machine {
      * block (that is how the debugger pauses the machine). */
     void (*instr_hook)(astro_machine_t *m, void *user);
     void *instr_hook_user;
+    /* bus_hook fires on the emulator thread for each bus access of the CPU
+     * (kind 0 memory read, 1 memory write, 2 IN, 3 OUT), after the access
+     * happened: data is the byte read or written, addr the full 16-bit
+     * address (for IN/OUT the port is the low byte). Opcode fetches (M1) and
+     * interrupt acknowledges are not reported; an instruction's operand
+     * fetches ARE memory reads here (the debugger filters those). Zero cost
+     * when NULL. */
+    void (*bus_hook)(astro_machine_t *m, int kind, uint16_t addr, uint8_t data,
+                     void *user);
+    void *bus_hook_user;
 };
 
 /* machine.c */
@@ -187,6 +198,12 @@ void astro_machine_run_scanline(astro_machine_t *m);
  * function generator included. */
 uint8_t astro_machine_peek(astro_machine_t *m, uint16_t addr);
 void astro_machine_poke(astro_machine_t *m, uint16_t addr, uint8_t data);
+/* Debugger: at an instruction boundary (inside the instr_hook), make the next
+ * instruction the one at `pc`. Performs the opcode fetch the CPU would have
+ * started there -- the state z80.h's fetch leaves (the fetch cycle's pins in
+ * m->pins, cpu.pc one past, the decoder waiting in M1/T2) -- so the next tick
+ * latches that opcode and no second boundary fires at the new PC. */
+void astro_machine_redirect(astro_machine_t *m, uint16_t pc);
 
 /* video.c */
 void astro_video_palette_init(uint32_t palette[512]);

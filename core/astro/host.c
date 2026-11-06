@@ -12,6 +12,7 @@
  */
 
 #include "host.h"
+#include "../debugger/debugger_internal.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -237,6 +238,20 @@ void astro_host_set_instr_hook(void (*hook)(astro_machine_t *m, void *user),
     s_machine.instr_hook = hook;
 }
 
+void astro_host_set_bus_hook(void (*hook)(astro_machine_t *m, int kind,
+                                          uint16_t addr, uint8_t data,
+                                          void *user),
+                             void *user)
+{
+    s_machine.bus_hook_user = user;
+    s_machine.bus_hook = hook;
+}
+
+void astro_host_publish_frame(void)
+{
+    frame_publish(s_machine.fb);
+}
+
 /* ---- the machine thread ---- */
 
 static void add_ns(struct timespec *t, long ns)
@@ -436,6 +451,9 @@ int astro_host_start(const astro_host_opts_t *opts)
         snprintf(s_boip, sizeof s_boip, "%s", opts->boip_hostport);
 
     astro_machine_init(&s_machine, s_bios, s_exp);
+    /* astro_machine_init wiped the machine, hooks included: an attached
+     * debugger puts its own back and stops the machine at instruction one */
+    astrodebug_core_started(&s_machine);
     astro_host_audio_reset();
 
     atomic_store(&s_stop_req, false);
@@ -443,6 +461,7 @@ int astro_host_start(const astro_host_opts_t *opts)
     if (pthread_create(&s_thread, NULL, machine_thread, NULL) != 0)
     {
         snprintf(s_error, sizeof s_error, "cannot start the machine thread");
+        astrodebug_core_stopping();
         astro_machine_free(&s_machine);
         return -1;
     }
@@ -455,6 +474,9 @@ void astro_host_stop(void)
     if (!atomic_load(&s_running))
         return;
     atomic_store(&s_stop_req, true);
+    /* a debugger-stopped machine is parked inside its instruction hook and
+     * would never see s_stop_req: release it first */
+    astrodebug_core_stopping();
     pthread_join(s_thread, NULL);
     atomic_store(&s_running, false);
     astro_machine_free(&s_machine);   /* also tears the cart down */

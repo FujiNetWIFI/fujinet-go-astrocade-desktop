@@ -9,7 +9,7 @@
 
 #include "MainWindow.h"
 
-#include "DebuggerWindow.h"
+#include "debugger/DebuggerWindow.h"
 #include "DisplayWidget.h"
 #include "SoftDisplayWidget.h"
 #include "KeyForward.h"
@@ -63,7 +63,7 @@ MainWindow::MainWindow(astrosession *session, QWidget *parent)
     if (getenv("ASTRO_OPEN_KEYPAD"))
         QTimer::singleShot(0, this, [this] { toggleKeypad(); });
     if (getenv("ASTRO_OPEN_DEBUGGER"))
-        QTimer::singleShot(0, this, [this] { showDebugger(); });
+        QTimer::singleShot(0, this, [this] { DebuggerWindow::showFor(this, m_session); });
     if (getenv("ASTRO_OPEN_PREFS"))
         QTimer::singleShot(0, this, [this] { showSettings(); });
 }
@@ -184,13 +184,6 @@ void MainWindow::toggleKeypad()
     m_keypad->setVisible(!m_keypad->isVisible());
 }
 
-void MainWindow::showDebugger()
-{
-    if (!m_debugger) m_debugger = new DebuggerWindow(m_session, this);
-    m_debugger->show();
-    m_debugger->raise();
-}
-
 /* A changed setting restarts the machine; a BIOS imported there starts it. */
 void MainWindow::showSettings()
 {
@@ -231,7 +224,7 @@ void MainWindow::buildMenus()
 
     auto *view = menuBar()->addMenu("&View");
     view->addAction("Controllers", QKeySequence(Qt::Key_F9), this, [this] { toggleKeypad(); });
-    view->addAction("Debugger", QKeySequence(Qt::Key_F12), this, [this] { showDebugger(); });
+    view->addAction("Debugger", QKeySequence(Qt::Key_F12), this, [this] { DebuggerWindow::toggleFor(this, m_session); });
 
     auto *fujinet = menuBar()->addMenu("&FujiNet");
     fujinet->addAction("Reset Game", this, [this] {
@@ -308,8 +301,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         setWindowState(windowState() ^ Qt::WindowFullScreen);
         return;
     case Qt::Key_F12:
-        if (!m_debugger) m_debugger = new DebuggerWindow(m_session, this);
-        m_debugger->show();
+        DebuggerWindow::toggleFor(this, m_session);
         return;
     default:
         break;
