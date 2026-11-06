@@ -29,6 +29,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+/* no SIGALRM on Windows: the restart watchdog is POSIX-only there (a hang
+ * falls to the CI job timeout) */
+static unsigned alarm(unsigned s) { (void)s; return 0; }
+#endif
+
 #include "astro_internal.h"
 #include "astrodebug.h"
 #include "astrovid.h"
@@ -160,7 +166,9 @@ int main(int argc, char **argv)
     if (fread(bios, 1, sizeof bios, f) != sizeof bios) { fclose(f); return 1; }
     fclose(f);
 
+#ifndef _WIN32
     signal(SIGALRM, on_alarm);
+#endif
     alarm(120);
 
     char tmpl[] = "/tmp/astro_debug_test_XXXXXX";
