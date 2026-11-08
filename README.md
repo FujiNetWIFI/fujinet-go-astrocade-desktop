@@ -30,6 +30,11 @@ milestone-by-milestone log.
   and video-chip register and every FujiBus packet the cart exchanges with
   FujiNet, gamepad hand controllers, ROM import, and a FujiNet console-log
   viewer. Config pages open in the system browser.
+- **Built-in Help** — **Help ▸ FujiNet Go Astrocade Help** (Ctrl+Shift+H, ⌘?
+  on a Mac) opens a searchable Help, and the Help buttons in Preferences, the
+  Controllers window, the debugger and the console log open the topic for what
+  they show. The text is [data/help/help.md](data/help/help.md), which GitHub
+  shows as it is; the build embeds it and every frontend lays it out natively.
 - **Packaging** — per-frontend DEB/RPM/TGZ, two Flatpaks, a Windows NSIS
   installer, and a signed macOS bundle, all wired through GitHub Actions.
 

@@ -47,6 +47,7 @@
  */
 
 #import "DebuggerWindow.h"
+#import "../help/HelpWindow.h"
 
 #import <QuartzCore/QuartzCore.h>
 
@@ -604,10 +605,21 @@ static void fill(NSStackView *stack, NSView *view)
     }
 }
 
+/* Help's contexts (astrohelp.h), one per tab */
+- (void)updateHelpContext
+{
+    static NSString *const kHelpTabs[] = { @"console", @"cpu", @"disassembly", @"video", @"breakpoints", @"io",
+                                           @"fujinet" };
+    NSInteger i = [_tabs indexOfTabViewItem:_tabs.selectedTabViewItem];
+    if (i >= 0 && i < 7)
+        AstroSetHelpContext(_window, [@"debugger/" stringByAppendingString:kHelpTabs[i]]);
+}
+
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
 {
     (void)tabView;
     (void)item;
+    [self updateHelpContext];
     [self refreshTab];
     if ([self currentTab] == TAB_CONSOLE) [_window makeFirstResponder:_conIn];
 }
@@ -916,7 +928,9 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     _status.alignment = NSTextAlignmentRight;
     _status.textColor = NSColor.secondaryLabelColor;
     _status.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSStackView *toolbar = hstack(@[_runBtn, step, over, outBtn, toCursor, frame, symbols, save, _status]);
+    NSButton *helpBtn = AstroHelpButton(nil);
+    [helpBtn setRefusesFirstResponder:YES];
+    NSStackView *toolbar = hstack(@[_runBtn, step, over, outBtn, toCursor, frame, symbols, save, _status, helpBtn]);
     [_status setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -954,6 +968,7 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
         if (t >= 0 && t < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:t];
     }
     _tabs.delegate = self;
+    [self updateHelpContext];
 
     NSStackView *root = vstack(@[toolbar, _tabs]);
     root.edgeInsets = NSEdgeInsetsMake(8, 8, 8, 8);

@@ -16,6 +16,11 @@ G_DECLARE_FINAL_TYPE(AstroWindow, astro_window, ASTRO, WINDOW,
 
 GtkWidget *astro_window_new(AdwApplication *app, astrosession *session);
 void       astro_window_toast(AstroWindow *self, const char *message);
+
+/* The Help context the main window shows now: "nobios", "prefs/<page>"
+ * while Preferences is open, else "main". */
+const char *astro_window_help_context(AstroWindow *self);
+
 void       astro_window_restart_session(AstroWindow *self);
 /* The picture, or the No-BIOS page when there is nothing to boot. */
 void       astro_window_show_page(AstroWindow *self);

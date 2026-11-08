@@ -32,6 +32,7 @@
 #include "bindings.h"
 #include "../resource.h"
 #include "../win_common.h"
+#include "../help/help_window.h"
 
 #define M_PI_D 3.14159265358979323846
 
@@ -53,7 +54,7 @@
 #define CLIENT_W (PL_X + 2 * PL_W + PL_GAP + 12)
 #define CLIENT_H (12 + 2 * PL_H + PL_GAP + 12)
 
-enum { SP_NONE = 0, SP_MAP, SP_CLEAR, SP_DEFAULTS, SP_DIAL };
+enum { SP_NONE = 0, SP_MAP, SP_CLEAR, SP_DEFAULTS, SP_DIAL, SP_HELP };
 
 typedef struct {
     RECT r;                  /* 96-dpi units */
@@ -135,6 +136,7 @@ static void build_controls(void)
     add(COL_X, 436, 72, 30, -1, SP_MAP, 0, L"Map");
     add(COL_X + 78, 436, 72, 30, -1, SP_CLEAR, 0, L"Clear");
     add(COL_X + 156, 436, 84, 30, -1, SP_DEFAULTS, 0, L"Defaults");
+    add(COL_X + 246, 436, 44, 30, -1, SP_HELP, 0, L"Help");
     g_hint_text.left = COL_X; g_hint_text.top = 474;
     g_hint_text.right = COL_X + COL_W; g_hint_text.bottom = 514;
 
@@ -248,6 +250,8 @@ static void on_special(int special)
         set_map_state(-1);
         snprintf(msg, sizeof msg, "%s cleared", bindings_target_label(t));
         set_hint(msg);
+    } else if (special == SP_HELP) {
+        astro_help_show(g_window, "keypad");
     } else if (special == SP_DEFAULTS) {
         bindings_reset_defaults(g_session);
         set_hint("Bindings reset to the defaults");
@@ -650,6 +654,7 @@ static void create(void)
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         CW_USEDEFAULT, CW_USEDEFAULT, CLIENT_W, CLIENT_H, g_owner, NULL, inst, NULL);
     wcscpy(g_pads, L"No gamepad connected");
+    astro_help_set_context(g_window, "keypad", 0);
     size_window(NULL);
 }
 

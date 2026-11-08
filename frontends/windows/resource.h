@@ -15,9 +15,12 @@
 #define IDM_DEBUGGER       210
 #define IDM_IMPORT_BIOS_DIR 211
 #define IDM_PREFS          212
+#define IDM_HELP           213
 
 /* the No-BIOS page's buttons */
 #define IDC_BIOS_FILES     301
 #define IDC_BIOS_FOLDER    302
+#define IDC_BIOS_HELP      303
+#define IDC_LOG_HELP       304
 
 #endif

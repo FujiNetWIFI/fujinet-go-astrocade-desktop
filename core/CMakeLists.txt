@@ -154,6 +154,21 @@ add_custom_command(
   COMMENT "Embedding the community SDL_GameControllerDB mappings"
   VERBATIM)
 
+# The Help, embedded: data/help/help.md as topics of styled spans
+# (core/include/astrohelp.h), which every frontend lays out with its own
+# toolkit. help_data.h declares the table; the build generates it.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(ASTRO_HELP_C "${CMAKE_BINARY_DIR}/generated/help_content.c")
+add_custom_command(
+  OUTPUT "${ASTRO_HELP_C}"
+  COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_SOURCE_DIR}/tools/help/make-help.py"
+          --src "${CMAKE_SOURCE_DIR}/data/help/help.md"
+          --out-c "${ASTRO_HELP_C}"
+  DEPENDS "${CMAKE_SOURCE_DIR}/tools/help/make-help.py"
+          "${CMAKE_SOURCE_DIR}/data/help/help.md"
+  COMMENT "Help"
+  VERBATIM)
+
 add_library(astro_session STATIC
   src/settings.c
   src/paths.c
@@ -166,6 +181,8 @@ add_library(astro_session STATIC
   src/audio_sdl.c
   src/gamepad_sdl.c
   src/fujinet_runtime.c
+  src/help.c
+  "${ASTRO_HELP_C}"
   "${ASTRO_GAMECONTROLLERDB_C}"
 )
 set_target_properties(astro_session PROPERTIES C_STANDARD 11)
@@ -265,6 +282,11 @@ target_link_libraries(session_test astro_session)
 add_test(NAME session_test
          COMMAND session_test "${ASTRO_ROM_DIR_SRC}/astro.bin")
 set_tests_properties(session_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# The built-in Help covers every setting, key and context.
+add_executable(help_test tests/help_test.c)
+target_link_libraries(help_test astro_session)
+add_test(NAME help_test COMMAND help_test)
 
 # BIOS import from files, zips and folders, on forged images (no Bally ROM
 # needed): each carries a real BIOS's size and CRC32.

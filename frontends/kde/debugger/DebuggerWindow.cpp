@@ -31,6 +31,7 @@
  */
 
 #include "DebuggerWindow.h"
+#include "../help/HelpWindow.h"
 
 #include <QFileDialog>
 #include <QFileInfo>
@@ -50,6 +51,7 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QShowEvent>
 #include <QSplitter>
 #include <QStatusBar>
@@ -342,7 +344,16 @@ DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
         m_tabs->addTab(pages[i], QString::fromUtf8(kTabs[i].label).replace(QLatin1Char('&'), QLatin1String("&&")));
     const int tab = tabFromEnv();
     if (tab >= 0) m_tabs->setCurrentIndex(tab);
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this](int page) {
+    /* Help's contexts (astrohelp.h), one per tab */
+    static const char *const kHelpTabs[] = { "console", "cpu", "disassembly", "video", "breakpoints", "io", "fujinet" };
+    auto setHelpContext = [this](int page) {
+        if (page >= 0 && page < (int)(sizeof kHelpTabs / sizeof kHelpTabs[0]))
+            setProperty("astroHelpContext", QStringLiteral("debugger/%1").arg(QLatin1String(kHelpTabs[page])));
+    };
+    setHelpContext(m_tabs->currentIndex());
+    new QShortcut(QKeySequence(Qt::Key_F1), this, [this] { astroHelpFor(this); });
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this, setHelpContext](int page) {
+        setHelpContext(page);
         if (page == TAB_VIDEO) m_haveSnap = false;
         refreshPage(page, false);
         if (page == TAB_CONSOLE) m_conIn->setFocus();
@@ -422,6 +433,7 @@ QWidget *DebuggerWindow::buildToolbar()
                     [this] { save("regs", QStringLiteral("Registers"), QStringLiteral("registers.txt")); });
     saveBtn->setMenu(menu);
     h->addWidget(saveBtn);
+    h->addWidget(astroHelpButton(QString()));
     return bar;
 }
 

@@ -5,6 +5,7 @@
  */
 
 #include "KeypadWindow.h"
+#include "../help/HelpWindow.h"
 #include "../KeyForward.h"
 
 #include <QEvent>
@@ -131,6 +132,7 @@ KeypadWindow::KeypadWindow(astrosession *session, QWidget *parent)
     : QWidget(parent, Qt::Dialog), m_session(session)
 {
     setWindowTitle("Controllers");
+    setProperty("astroHelpContext", QStringLiteral("keypad"));
     /* A Qt::Dialog with min == max size: a tiling compositor floats it. */
     auto *root = new QVBoxLayout(this);
     root->setSizeConstraint(QLayout::SetFixedSize);
@@ -166,6 +168,7 @@ KeypadWindow::KeypadWindow(astrosession *session, QWidget *parent)
     mapRow->addWidget(m_clearBtn);
     mapRow->addWidget(defaults);
     mapRow->addWidget(m_hint, 1);
+    mapRow->addWidget(astroHelpButton(QStringLiteral("keypad")));
     left->addLayout(mapRow);
     top->addLayout(left);
 

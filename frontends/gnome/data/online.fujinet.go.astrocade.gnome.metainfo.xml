@@ -14,7 +14,8 @@
     <p>
       Emulation is a MAME-derived Astrocade core (the Z80 CPU, the data-chip
       video with its magic function generator, and the custom I/O sound
-      chip), with FujiNet attached over Bus-Over-IP (BoIP) on loopback TCP.
+      chip), with FujiNet attached over Bus-Over-IP (BoIP) on loopback TCP. Built-in,
+      searchable Help covers all of it.
     </p>
   </description>
   <launchable type="desktop-id">online.fujinet.go.astrocade.gnome.desktop</launchable>

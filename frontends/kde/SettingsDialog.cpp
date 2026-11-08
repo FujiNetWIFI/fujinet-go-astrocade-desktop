@@ -5,6 +5,7 @@
  */
 
 #include "SettingsDialog.h"
+#include "help/HelpWindow.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -19,6 +20,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -196,8 +198,18 @@ bool SettingsDialog::run(QWidget *parent, astrosession *session,
         tabs->setCurrentIndex(1);
     outer->addWidget(tabs);
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
-                                         QDialogButtonBox::Cancel);
+    /* Help, F1 and Ctrl+Shift+H (the app's shortcuts don't reach a modal dialog) */
+    auto pageContext = [tabs](int i) {
+        return i == 1 ? QStringLiteral("prefs/ROMs") : QStringLiteral("prefs/Machine");
+    };
+    dlg.setProperty("astroHelpContext", pageContext(tabs->currentIndex()));
+    QObject::connect(tabs, &QTabWidget::currentChanged, &dlg,
+                     [&dlg, pageContext](int i) { dlg.setProperty("astroHelpContext", pageContext(i)); });
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel |
+                                         QDialogButtonBox::Help);
+    QObject::connect(buttons, &QDialogButtonBox::helpRequested, &dlg, [&dlg] { astroHelpFor(&dlg); });
+    for (const char *key : { "F1", "Ctrl+Shift+H" })
+        new QShortcut(QKeySequence(QString::fromLatin1(key)), &dlg, [&dlg] { astroHelpFor(&dlg); });
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, [&] {
         char host[64];
         int port;

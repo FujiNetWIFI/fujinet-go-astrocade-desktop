@@ -12,6 +12,7 @@
  */
 
 #include "prefs.h"
+#include "help/help_window.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -256,6 +257,7 @@ static AdwPreferencesPage *build_roms_page(PrefsState *st)
                 gtk_widget_set_valign(dir, GTK_ALIGN_CENTER);
                 gtk_box_append(GTK_BOX(box), files);
                 gtk_box_append(GTK_BOX(box), dir);
+                gtk_box_append(GTK_BOX(box), astro_help_button("prefs/ROMs"));
                 adw_preferences_group_set_header_suffix(group, box);
             }
             adw_preferences_page_add(page, group);
@@ -293,11 +295,13 @@ void astro_prefs_show(AstroWindow *window, astrosession *session)
 
     AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     adw_preferences_page_set_title(page, "Machine");
+    adw_preferences_page_set_name(page, "Machine");
     adw_preferences_page_set_icon_name(page, "applications-games-symbolic");
 
     AdwPreferencesGroup *group =
         ADW_PREFERENCES_GROUP(adw_preferences_group_new());
     adw_preferences_group_set_title(group, "Machine");
+    adw_preferences_group_set_header_suffix(group, astro_help_button("prefs/Machine"));
     adw_preferences_group_set_description(
         group, "Changes take effect when the machine restarts.");
 

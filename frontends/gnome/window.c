@@ -15,6 +15,7 @@
 #include "bindings.h"
 #include "debugger/dbg_window.h"
 #include "display.h"
+#include "help/help_window.h"
 #include "keypad/keypad_window.h"
 #include "prefs.h"
 
@@ -95,12 +96,47 @@ gboolean astro_window_input_key(astrosession *session, guint keycode,
     return r;
 }
 
+/* The Help context the main window shows now: "nobios" on the No-BIOS page,
+ * "prefs/<page>" while Preferences is open, else "main". */
+const char *astro_window_help_context(AstroWindow *self)
+{
+    AdwDialog *d = adw_application_window_get_visible_dialog(ADW_APPLICATION_WINDOW(self));
+    if (d && ADW_IS_PREFERENCES_DIALOG(d)) {
+        static char ctx[64];
+        const char *page = adw_preferences_dialog_get_visible_page_name(ADW_PREFERENCES_DIALOG(d));
+        g_snprintf(ctx, sizeof ctx, "prefs/%s", page ? page : "Machine");
+        return ctx;
+    }
+    if (g_strcmp0(gtk_stack_get_visible_child_name(self->stack), "nobios") == 0)
+        return "nobios";
+    return "main";
+}
+
+/* app.help: every window's Ctrl+Shift+H, for what it shows. Not a cast of
+ * the active window: it can be the debugger, the controllers or the log. */
+static void action_help(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
+    (void)a; (void)p;
+    astro_help_for(gtk_application_get_active_window(GTK_APPLICATION(user_data)));
+}
+
+static const GActionEntry app_actions[] = {
+    { "help", action_help, NULL, NULL, NULL, { 0 } },
+};
+
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
                                guint keycode, GdkModifierType state,
                                gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)controller;
+
+    /* F1 is Help while Preferences or another dialog is open */
+    if (keyval == GDK_KEY_F1 && adw_application_window_get_visible_dialog(ADW_APPLICATION_WINDOW(self)) &&
+        !(state & GDK_MODIFIER_MASK & ~GDK_LOCK_MASK)) {
+        astro_help_for(GTK_WINDOW(self));
+        return TRUE;
+    }
 
     /* Map mode takes any key, F9 and F12 included */
     if (astro_keypad_window_is_visible() &&
@@ -304,6 +340,7 @@ static GtkWidget *nobios_page(AstroWindow *self)
     gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(box), files);
     gtk_box_append(GTK_BOX(box), folder);
+    gtk_box_append(GTK_BOX(box), astro_help_button("nobios"));
     adw_status_page_set_child(ADW_STATUS_PAGE(page), box);
     return page;
 }
@@ -368,6 +405,16 @@ static gboolean log_refresh(gpointer text_view)
     return G_SOURCE_CONTINUE;
 }
 
+static gboolean log_on_key(GtkEventControllerKey *c, guint keyval, guint code,
+                           GdkModifierType st, gpointer ud)
+{
+    (void)c; (void)code; (void)st;
+    if (keyval != GDK_KEY_F1)
+        return FALSE;
+    astro_help_for(ud);
+    return TRUE;
+}
+
 static void action_fujinet_log(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
@@ -390,6 +437,15 @@ static void action_fujinet_log(GSimpleAction *a, GVariant *p, gpointer user_data
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), view);
     gtk_window_set_child(GTK_WINDOW(dialog), scroll);
+    {
+        GtkWidget *header = adw_header_bar_new();
+        GtkEventController *keys = gtk_event_controller_key_new();
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), astro_help_button("fujilog"));
+        gtk_window_set_titlebar(GTK_WINDOW(dialog), header);
+        astro_help_set_context(GTK_WINDOW(dialog), "fujilog");
+        g_signal_connect(keys, "key-pressed", G_CALLBACK(log_on_key), dialog);
+        gtk_widget_add_controller(dialog, keys);
+    }
 
     log_refresh(view);
     guint id = g_timeout_add(1000, log_refresh, view);
@@ -487,6 +543,7 @@ static GMenu *build_menu(void)
     g_menu_append_section(menu, "FujiNet", G_MENU_MODEL(fujinet));
 
     g_menu_append(tail, "Preferences…", "win.preferences");
+    g_menu_append(tail, "FujiNet Go Astrocade Help", "app.help");
     g_menu_append(tail, "About FujiNet Go Astrocade", "win.about");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(tail));
 
@@ -524,6 +581,13 @@ GtkWidget *astro_window_new(AdwApplication *app, astrosession *session)
 
     g_action_map_add_action_entries(G_ACTION_MAP(self), win_actions,
                                     G_N_ELEMENTS(win_actions), self);
+    if (!g_action_map_lookup_action(G_ACTION_MAP(app), "help"))
+        g_action_map_add_action_entries(G_ACTION_MAP(app), app_actions,
+                                        G_N_ELEMENTS(app_actions), app);
+    {
+        static const char *const help_accels[] = { "<Control><Shift>h", NULL };
+        gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.help", help_accels);
+    }
 
     header = ADW_HEADER_BAR(adw_header_bar_new());
     menu = build_menu();

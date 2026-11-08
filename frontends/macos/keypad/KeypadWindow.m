@@ -24,9 +24,10 @@
 #include <string.h>
 
 #import "../AstroKeyForward.h"
+#import "../help/HelpWindow.h"
 #include "bindings.h"
 
-enum { SP_NONE = 0, SP_MAP, SP_CLEAR, SP_DEFAULTS, SP_DIAL };
+enum { SP_NONE = 0, SP_MAP, SP_CLEAR, SP_DEFAULTS, SP_DIAL, SP_HELP };
 
 #define KEY_W 62
 #define KEY_H 40
@@ -125,6 +126,7 @@ static ControllersView *g_view;
     [self add:NSMakeRect(COL_X, 436, 72, 30) target:-1 special:SP_MAP player:0 face:"Map"];
     [self add:NSMakeRect(COL_X + 78, 436, 72, 30) target:-1 special:SP_CLEAR player:0 face:"Clear"];
     [self add:NSMakeRect(COL_X + 156, 436, 84, 30) target:-1 special:SP_DEFAULTS player:0 face:"Defaults"];
+    [self add:NSMakeRect(COL_X + 246, 436, 44, 30) target:-1 special:SP_HELP player:0 face:"Help"];
     _hintText = NSMakeRect(COL_X, 474, COL_W, 40);
 
     static const char *const arrows[4] = { "\xE2\x96\xB2", "\xE2\x97\x80", "\xE2\x96\xB6", "\xE2\x96\xBC" };
@@ -255,6 +257,8 @@ static ControllersView *g_view;
         bindings_clear(_session, t);
         [self setMapState:-1];
         [self setHint:[NSString stringWithFormat:@"%s cleared", bindings_target_label(t)]];
+    } else if (sp == SP_HELP) {
+        [[AstroHelpWindow shared] showAt:@"keypad"];
     } else if (sp == SP_DEFAULTS) {
         bindings_reset_defaults(_session);
         [self setHint:@"Bindings reset to the defaults"];
@@ -452,6 +456,7 @@ static NSPanel *g_panel;
                                  NSWindowStyleMaskUtilityWindow)
                         backing:NSBackingStoreBuffered defer:NO];
         g_panel.title = @"Controllers";
+        AstroSetHelpContext(g_panel, @"keypad");
         g_panel.floatingPanel = YES;
         g_panel.hidesOnDeactivate = NO;
         g_panel.releasedWhenClosed = NO;

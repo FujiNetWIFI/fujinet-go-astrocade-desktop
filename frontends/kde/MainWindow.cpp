@@ -15,7 +15,9 @@
 #include "KeyForward.h"
 #include "keypad/KeypadWindow.h"
 #include "SettingsDialog.h"
+#include "help/HelpWindow.h"
 
+#include <QApplication>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QFileDialog>
@@ -27,6 +29,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QShortcut>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTimer>
@@ -43,6 +46,7 @@ MainWindow::MainWindow(astrosession *session, QWidget *parent)
     : QMainWindow(parent), m_session(session)
 {
     setWindowTitle("FujiNet Go Astrocade");
+    setProperty("astroHelpContext", QStringLiteral("main"));
     resize(800, 650);
     auto *gpu = new DisplayWidget(session, this);
     m_display = gpu;
@@ -134,6 +138,7 @@ QWidget *MainWindow::buildNoBiosPage()
     row->addStretch(1);
     row->addWidget(files);
     row->addWidget(folder);
+    row->addWidget(astroHelpButton(QStringLiteral("nobios")));
     row->addStretch(1);
     v->addWidget(title);
     v->addSpacing(8);
@@ -166,6 +171,7 @@ void MainWindow::showPage()
 {
     const bool bios = astrosession_has_system_roms(m_session) != 0;
     m_stack->setCurrentWidget(bios ? m_display->widget() : m_noBios);
+    setProperty("astroHelpContext", bios ? QStringLiteral("main") : QStringLiteral("nobios"));
     if (bios)
         m_display->widget()->setFocus();
 }
@@ -248,6 +254,17 @@ void MainWindow::buildMenus()
 
     auto *help = menuBar()->addMenu("&Settings");
     help->addAction("Preferences…", this, [this] { showSettings(); });
+    {
+        /* works from every window of the app (the Controllers window and the
+         * Debugger have the keyboard too) */
+        QAction *helpAct = help->addAction(QStringLiteral("FujiNet Go Astrocade &Help"));
+        helpAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H));
+        helpAct->setShortcutContext(Qt::ApplicationShortcut);
+        addAction(helpAct);
+        connect(helpAct, &QAction::triggered, this, [this] {
+            astroHelpFor(QApplication::activeWindow() ? QApplication::activeWindow() : this);
+        });
+    }
     help->addAction("About", this, [this] {
         QMessageBox::about(this, "FujiNet Go Astrocade",
             "FujiNet Go Astrocade " ASTRO_VERSION_STRING "\n\n"
@@ -268,6 +285,8 @@ void MainWindow::showFujinetLog()
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowTitle("FujiNet Console Log");
     dlg->resize(700, 500);
+    dlg->setProperty("astroHelpContext", QStringLiteral("fujilog"));
+    new QShortcut(QKeySequence(Qt::Key_F1), dlg, [dlg] { astroHelpFor(dlg); });
     auto *layout = new QVBoxLayout(dlg);
     auto *view = new QPlainTextEdit;
     view->setReadOnly(true);
@@ -275,6 +294,13 @@ void MainWindow::showFujinetLog()
     f.setStyleHint(QFont::TypeWriter);
     view->setFont(f);
     layout->addWidget(view);
+    {
+        auto *bar = new QHBoxLayout;
+        bar->setContentsMargins(6, 2, 6, 4);
+        bar->addStretch(1);
+        bar->addWidget(astroHelpButton(QStringLiteral("fujilog")));
+        layout->addLayout(bar);
+    }
 
     auto refresh = [this, view] {
         char buf[16384];

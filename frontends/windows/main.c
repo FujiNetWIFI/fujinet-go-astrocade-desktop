@@ -24,6 +24,7 @@
 #include "debugger/dbg_window.h"
 #include "display.h"
 #include "fujilog.h"
+#include "help/help_window.h"
 #include "import.h"
 #include "keypad/keypad_window.h"
 #include "prefs.h"
@@ -32,7 +33,7 @@
 
 static astrosession *g_session;
 static HWND g_hwnd, g_display;
-static HWND g_bios_files_btn, g_bios_folder_btn;
+static HWND g_bios_files_btn, g_bios_folder_btn, g_bios_help_btn;
 static HFONT g_ui_font, g_title_font;
 static HICON g_big_icon;
 static int g_dpi = 96;
@@ -138,6 +139,8 @@ static void layout(void)
                    g.files.bottom - g.files.top, TRUE);
         MoveWindow(g_bios_folder_btn, g.folder.left, g.folder.top, g.folder.right - g.folder.left,
                    g.folder.bottom - g.folder.top, TRUE);
+        MoveWindow(g_bios_help_btn, g.folder.left, g.folder.bottom + S(10), g.folder.right - g.folder.left,
+                   g.folder.bottom - g.folder.top, TRUE);
     }
     InvalidateRect(g_hwnd, NULL, FALSE);
 }
@@ -148,6 +151,9 @@ static void show_page(void)
     if (g_display) ShowWindow(g_display, bios ? SW_SHOW : SW_HIDE);
     ShowWindow(g_bios_files_btn, bios ? SW_HIDE : SW_SHOW);
     ShowWindow(g_bios_folder_btn, bios ? SW_HIDE : SW_SHOW);
+    ShowWindow(g_bios_help_btn, bios ? SW_HIDE : SW_SHOW);
+    /* F1 is not bound by the console here; Help opens the page that shows */
+    astro_help_set_context(g_hwnd, bios ? "main" : "nobios", 0);
     layout();
 }
 
@@ -159,6 +165,7 @@ static void make_fonts(void)
     g_title_font = astro_make_font(g_dpi, 22, FW_BOLD, NULL);
     if (g_bios_files_btn) SendMessageW(g_bios_files_btn, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
     if (g_bios_folder_btn) SendMessageW(g_bios_folder_btn, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
+    if (g_bios_help_btn) SendMessageW(g_bios_help_btn, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
 }
 
 static void toggle_keypad(void)
@@ -254,6 +261,12 @@ static void do_command(int id)
         }
         astro_fujilog_show(g_hwnd, g_session);
         break;
+    case IDC_BIOS_HELP:
+        astro_help_show(g_hwnd, "nobios");
+        break;
+    case IDM_HELP:
+        astro_help_for(g_hwnd);
+        break;
     case IDM_ABOUT: {
         char text[512];
         snprintf(text, sizeof text,
@@ -297,6 +310,8 @@ static HMENU build_menu(void)
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)fn, "&FujiNet");
 
     HMENU help = CreatePopupMenu();
+    AppendMenuA(help, MF_STRING, IDM_HELP, "FujiNet Go Astrocade &Help\tCtrl+Shift+H");
+    AppendMenuA(help, MF_SEPARATOR, 0, NULL);
     AppendMenuA(help, MF_STRING, IDM_ABOUT, "&About");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)help, "&Help");
     return menu;
@@ -403,6 +418,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
                                        0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)IDC_BIOS_FILES, inst, NULL);
     g_bios_folder_btn = CreateWindowExA(0, "BUTTON", "Import a Folder...", WS_CHILD | BS_PUSHBUTTON,
                                         0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)IDC_BIOS_FOLDER, inst, NULL);
+    g_bios_help_btn = CreateWindowExA(0, "BUTTON", "Help", WS_CHILD | BS_PUSHBUTTON,
+                                      0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)IDC_BIOS_HELP, inst, NULL);
     make_fonts();
     {
         /* a 4:3 client, at this monitor's DPI */
@@ -430,6 +447,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         /* the debugger's F5/F7/F8/F9/F12 accelerators get first refusal while
          * its window (or one of its fields) has the focus */
         if (astro_debugger_pretranslate(&m))
+            continue;
+        if (astro_help_pretranslate(&m))
             continue;
         TranslateMessage(&m);
         DispatchMessage(&m);

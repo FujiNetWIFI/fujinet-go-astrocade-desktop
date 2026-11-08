@@ -18,6 +18,7 @@
  */
 
 #import "SettingsWindow.h"
+#import "help/HelpWindow.h"
 
 #include <string.h>
 
@@ -26,7 +27,7 @@
 
 static SettingsWindow *g_shown;
 
-@interface SettingsWindow () <NSWindowDelegate>
+@interface SettingsWindow () <NSWindowDelegate, NSTabViewDelegate>
 @end
 
 @implementation SettingsWindow {
@@ -263,6 +264,13 @@ static NSTextField *label(NSString *text, NSRect frame)
     return v;
 }
 
+/* Help's context: the page that shows */
+- (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
+{
+    (void)tabView;
+    AstroSetHelpContext(_window, [item.identifier isEqual:@"roms"] ? @"prefs/ROMs" : @"prefs/Machine");
+}
+
 + (void)showForSession:(astrosession *)session
               romsPage:(BOOL)romsPage
               imported:(void (^)(void))imported
@@ -294,9 +302,17 @@ static NSTextField *label(NSString *text, NSRect frame)
     item.view = [s romsPage];
     [s->_tabs addTabViewItem:item];
     [s->_window.contentView addSubview:s->_tabs];
+    {
+        NSButton *helpBtn = AstroHelpButton(nil);
+        [helpBtn setFrame:NSMakeRect(WIN_W - 12 - 28, WIN_H - 12 - 28, 26, 26)];
+        [s->_window.contentView addSubview:helpBtn];
+        s->_tabs.delegate = s;
+        AstroSetHelpContext(s->_window, @"prefs/Machine");
+    }
     [s refresh];
     if (romsPage)
         [s->_tabs selectTabViewItemWithIdentifier:@"roms"];
+    [s tabView:s->_tabs didSelectTabViewItem:s->_tabs.selectedTabViewItem];
     [s->_window center];
     [s->_window makeKeyAndOrderFront:nil];
     g_shown = s;

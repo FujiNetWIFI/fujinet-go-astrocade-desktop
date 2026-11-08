@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "help/help_window.h"
 #include "import.h"
 #include "resource.h"
 #include "win_common.h"
@@ -34,7 +35,7 @@
 
 enum {
     ID_TABS = 100, ID_BIOS, ID_EXP, ID_ROM_FILES, ID_ROM_FOLDER, ID_ROM_LIST, ID_CLOSE,
-    ID_EXTERNAL, ID_EXT_ADDR,
+    ID_EXTERNAL, ID_EXT_ADDR, ID_HELP,
 };
 enum { PAGE_MACHINE, PAGE_ROMS };
 
@@ -43,7 +44,7 @@ enum { PAGE_MACHINE, PAGE_ROMS };
 #define CH 380              /* client height */
 #define M 12                /* margin */
 
-static HWND g_win, g_tabs, g_close;
+static HWND g_win, g_tabs, g_close, g_help;
 static HWND g_bios_label, g_bios, g_exp_label, g_exp, g_machine_note;
 static HWND g_ext_check, g_ext_label, g_ext_addr, g_ext_note;
 static HWND g_rom_note, g_rom_path, g_rom_files, g_rom_folder, g_rom_list;
@@ -99,6 +100,8 @@ static void show_page(int page)
                        g_ext_check, g_ext_label, g_ext_addr, g_ext_note };
     HWND roms[] = { g_rom_note, g_rom_path, g_rom_files, g_rom_folder, g_rom_list };
     g_page = page;
+    /* Help, F1 and Ctrl+Shift+H open the page's own */
+    astro_help_set_context(g_win, page == PAGE_ROMS ? "prefs/ROMs" : "prefs/Machine", 1);
     for (size_t i = 0; i < sizeof machine / sizeof machine[0]; i++)
         ShowWindow(machine[i], page == PAGE_MACHINE ? SW_SHOW : SW_HIDE);
     for (size_t i = 0; i < sizeof roms / sizeof roms[0]; i++)
@@ -149,6 +152,7 @@ static void layout(void)
     }
 
     MoveWindow(g_close, cw - m - S(96), ch - m - S(28), S(96), S(28), TRUE);
+    MoveWindow(g_help, m, ch - m - S(28), S(96), S(28), TRUE);
 }
 
 static void make_font(void)
@@ -181,6 +185,7 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case ID_HELP: astro_help_for(hwnd); return 0;
         case ID_BIOS:
         case ID_EXP:
             if (HIWORD(wp) == CBN_SELCHANGE) {
@@ -363,6 +368,8 @@ void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hook
             SendMessageW(g_rom_list, LVM_INSERTCOLUMNW, (WPARAM)i, (LPARAM)&col);
         }
     }
+    g_help = CreateWindowW(L"BUTTON", L"Help", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                           0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_HELP, inst, NULL);
     g_close = CreateWindowW(L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                             0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_CLOSE, inst, NULL);
     /* the tab body under the pages: its repaints never cover them */

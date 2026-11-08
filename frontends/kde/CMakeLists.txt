@@ -25,6 +25,7 @@ set(KDE_SOURCES
   KeyForward.cpp
   keypad/KeypadWindow.cpp
   SettingsDialog.cpp
+  help/HelpWindow.cpp
   debugger/DebuggerWindow.cpp
 )
 
@@ -56,7 +57,7 @@ install(FILES data/${KDE_APP_ID}.metainfo.xml
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
   add_executable(keypad_test keypad_test.cpp KeyForward.cpp
-                 keypad/KeypadWindow.cpp)
+                 keypad/KeypadWindow.cpp help/HelpWindow.cpp)
   set_target_properties(keypad_test PROPERTIES CXX_STANDARD 17)
   target_link_libraries(keypad_test PRIVATE astro_session astro_core
                         Qt6::Widgets Qt6::Test m)
@@ -74,7 +75,7 @@ if(Qt6Test_FOUND)
   add_executable(debugger_test debugger_test.cpp debugger/DebuggerWindow.cpp
                  MainWindow.cpp DisplayWidget.cpp SoftDisplayWidget.cpp
                  FrameFeed.cpp SettingsDialog.cpp KeyForward.cpp
-                 keypad/KeypadWindow.cpp)
+                 keypad/KeypadWindow.cpp help/HelpWindow.cpp)
   set_target_properties(debugger_test PROPERTIES CXX_STANDARD 17)
   target_link_libraries(debugger_test PRIVATE astro_session astro_core
                         Qt6::Widgets Qt6::GuiPrivate Qt6::Test m)

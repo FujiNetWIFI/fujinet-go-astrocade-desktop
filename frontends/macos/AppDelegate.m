@@ -16,6 +16,7 @@
 #import "debugger/DebuggerWindow.h"
 #import "DisplayView.h"
 #import "SettingsWindow.h"
+#import "help/HelpWindow.h"
 
 #include <stdlib.h>
 
@@ -89,7 +90,8 @@
     files.bezelColor = [NSColor controlAccentColor];
     files.keyEquivalent = @"\r";
     NSButton *folder = [NSButton buttonWithTitle:@"Import a Folder…" target:self action:@selector(importBiosFolder:)];
-    NSStackView *buttons = [NSStackView stackViewWithViews:@[files, folder]];
+    NSButton *helpBtn = AstroHelpButton(@"nobios");
+    NSStackView *buttons = [NSStackView stackViewWithViews:@[files, folder, helpBtn]];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     buttons.spacing = 12;
     NSStackView *column = [NSStackView stackViewWithViews:@[icon, title, desc, buttons]];
@@ -112,6 +114,7 @@
     const BOOL bios = astrosession_has_system_roms(_session) != 0;
     _display.hidden = !bios;
     _noBios.hidden = bios;
+    AstroSetHelpContext(_window, bios ? @"main" : @"nobios");
     if (bios)
         [_window makeFirstResponder:_display];
 }
@@ -192,6 +195,24 @@
     [fn addItemWithTitle:@"FujiNet Console Log…"
                   action:@selector(fujinetLog:) keyEquivalent:@""].target = self;
     fnItem.submenu = fn;
+
+    NSMenuItem *helpItem = [[NSMenuItem alloc] init];
+    [menubar addItem:helpItem];
+    NSMenu *help = [[NSMenu alloc] initWithTitle:@"Help"];
+    /* openHelp:, not showHelp: (AppKit's: "Help isn't available") */
+    [help addItemWithTitle:@"FujiNet Go Astrocade Help"
+                    action:@selector(openHelp:) keyEquivalent:@"?"].target = self;
+    helpItem.submenu = help;
+    NSApp.helpMenu = help;
+    /* the Help menu's search field finds the Help's sections too */
+    [NSApp registerUserInterfaceItemSearchHandler:[AstroHelpWindow shared]];
+}
+
+/* For the window in front: Settings, the debugger's tab ... */
+- (void)openHelp:(id)sender
+{
+    (void)sender;
+    [[AstroHelpWindow shared] showFor:[NSApp keyWindow]];
 }
 
 - (void)showAbout:(id)sender
@@ -307,7 +328,7 @@
     w.releasedWhenClosed = NO;
     [w center];
 
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:w.contentView.bounds];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 36, 700, 464)];
     scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     scroll.hasVerticalScroller = YES;
     NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.bounds];
@@ -315,7 +336,17 @@
     text.font = [NSFont userFixedPitchFontOfSize:11];
     text.autoresizingMask = NSViewWidthSizable;
     scroll.documentView = text;
-    w.contentView = scroll;
+    {
+        /* the log over a strip with the Help button */
+        NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 700, 500)];
+        NSButton *help = AstroHelpButton(@"fujilog");
+        [help setFrameOrigin:NSMakePoint(10, 6)];
+        help.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+        [box addSubview:scroll];
+        [box addSubview:help];
+        w.contentView = box;
+    }
+    AstroSetHelpContext(w, @"fujilog");
 
     astrosession *sess = _session;
     void (^refresh)(void) = ^{
