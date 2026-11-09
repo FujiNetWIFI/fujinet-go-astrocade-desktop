@@ -12,8 +12,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "astromemtools.h"
+#include "astrovidtab.h"
 #include "debugger_internal.h"
 
 typedef struct {
@@ -59,7 +61,8 @@ static const char *help_text =
     "set <reg> <expr>       e.g. set pc $8024, set zf 1, set af' 0\n"
     "mem <addr> [len]       dump memory (side-effect free; alias dump)\n"
     "poke <addr> <v...>     write memory\n"
-    "vram <addr> [len] (screen RAM, 0-$FFF) | vpoke <addr> <v...> | video\n"
+    "vram <addr> [len] (screen RAM, 0-$FFF) | vpoke <addr> <v...>\n"
+    "video [registers|colours|lines|timing]   the video chip, and what each line was drawn with\n"
     "io (alias map)         the memory map, ports and chip registers\n"
     "fujinet                the FujiNet link\n"
     "label <addr> <name> | labels [file] (alias symbols)\n"
@@ -90,6 +93,13 @@ static char *next_tok(char **p)
         *s++ = '\0';
     *p = s;
     return t;
+}
+
+static int next_tok_peek(const char *p)
+{
+    while (*p && isspace((unsigned char)*p))
+        p++;
+    return *p != '\0';
 }
 
 static char *rest_of(char *p)
@@ -451,6 +461,23 @@ int astrodebug_command(astrodebug *d, const char *command, char *dst, int dstsz)
         }
         out(&o, "%d byte%s at $%04lX\n", n, n == 1 ? "" : "s",
             (unsigned long)v & 0xffff);
+    } else if ((!strcmp(cmd, "video") || !strcmp(cmd, "vdp")) && next_tok_peek(p)) {
+        char *sub = next_tok(&p);
+        int sec = -1, i;
+        for (i = 0; i < ASTROVID_S_COUNT; i++)
+            if (!strncasecmp(sub, astrovid_section_key(i), strlen(sub))) sec = i;
+        if (sec < 0) {
+            out(&o, "video [pixel|registers|colours|lines|timing]\n");
+        } else {
+            astrovid_tab *vt = astrovid_tab_new();
+            char text[8192];
+            if (vt) {
+                astrovid_tab_refresh(vt, 1);
+                astrovid_tab_text(vt, sec, text, sizeof text);
+                out(&o, "%s", text);
+                astrovid_tab_free(vt);
+            }
+        }
     } else if (!strcmp(cmd, "video") || !strcmp(cmd, "vdp")) {
         astrovid_snapshot *s = malloc(sizeof *s);
         char text[2048];

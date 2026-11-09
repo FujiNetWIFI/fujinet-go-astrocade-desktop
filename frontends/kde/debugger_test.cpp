@@ -30,6 +30,8 @@
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QMenu>
 #include <QStatusBar>
 #include <QStyleHints>
 #include <QTabWidget>
@@ -963,21 +965,6 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!io->toPlainText().isEmpty(), 2000);
         QVERIFY(!io->toPlainText().isEmpty());
         shot(QStringLiteral("memmap"));
-        /* Video chip: the pictures and the decoded registers */
-        m_tabs->setCurrentIndex(8);
-        QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            [&] {
-                int pix = 0;
-                for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
-                    pix += !l->pixmap(Qt::ReturnByValue).isNull();
-                return pix == 3;                /* screen, screen RAM, palette */
-            }(), 2000);
-        QPlainTextEdit *regs = nullptr;
-        for (QPlainTextEdit *e : m_tabs->currentWidget()->findChildren<QPlainTextEdit *>()) regs = e;
-        QVERIFY(regs);
-        QVERIFY(!regs->toPlainText().isEmpty());
-        shot(QStringLiteral("video"));
         /* FujiNet: empty without the runtime, and says so */
         m_tabs->setCurrentIndex(9);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
@@ -987,6 +974,110 @@ private slots:
         QVERIFY(note);
         QVERIFY(m_tabs->currentWidget()->findChild<QPushButton *>()->text() == QLatin1String("Clear"));
         shot(QStringLiteral("fujinet"));
+        m_tabs->setCurrentIndex(0);
+    }
+
+    /* The Video chip tab: views, zoom, overlays, hover and pin, the tables, Break on writes. */
+    void videoTab()
+    {
+        astrodebug_breakpoint_clear(m_d);
+        m_tabs->setCurrentIndex(8);
+        QWidget *page = m_tabs->currentWidget();
+        QTRY_VERIFY_WITH_TIMEOUT(page->isVisible(), 1000);
+        auto combos = page->findChildren<QComboBox *>();
+        QVERIFY(combos.size() >= 2);
+        QComboBox *view = combos[0], *zoom = combos[1];
+        QStringList views;
+        for (int i = 0; i < view->count(); ++i) views << view->itemText(i);
+        QCOMPARE(views, (QStringList{ QStringLiteral("Display"), QStringLiteral("Decoded"), QStringLiteral("Beam"),
+                                      QStringLiteral("Values") }));
+        QCOMPARE(zoom->itemText(0), QStringLiteral("Fit"));
+        QWidget *pic = page->findChild<QWidget *>(QStringLiteral("videoPicture"));
+        QVERIFY(pic);
+        QTRY_VERIFY_WITH_TIMEOUT(pic->width() >= 100 && pic->height() >= 100, 2000);
+        shot(QStringLiteral("video-display"));
+
+        /* a change of view redraws */
+        view->setCurrentIndex(1);
+        QTRY_VERIFY_WITH_TIMEOUT(pic->width() >= 100, 1000);
+        shot(QStringLiteral("video-decoded"));
+        view->setCurrentIndex(0);
+
+        /* zoom resizes the picture (Decoded: the Display base can be too big to double) */
+        view->setCurrentIndex(1);
+        zoom->setCurrentIndex(zoom->findText(QStringLiteral("1×")));
+        QTest::qWait(50);
+        const int w1 = pic->width();
+        zoom->setCurrentIndex(zoom->findText(QStringLiteral("2×")));
+        QTRY_VERIFY2_WITH_TIMEOUT(pic->width() == w1 * 2, qPrintable(QStringLiteral("1x %1 2x %2").arg(w1).arg(pic->width())), 1000);
+        view->setCurrentIndex(0);
+
+        /* an overlay from the menu */
+        QToolButton *ovBtn = nullptr;
+        for (QToolButton *t : page->findChildren<QToolButton *>())
+            if (t->text() == QLatin1String("Overlays")) ovBtn = t;
+        QVERIFY(ovBtn && ovBtn->menu());
+        QAction *grid = ovBtn->menu()->actions().value(0);
+        QVERIFY(grid && grid->isCheckable());
+        grid->setChecked(true);
+        QTest::qWait(50);
+        shot(QStringLiteral("video-grid"));
+        grid->setChecked(false);
+
+        /* hover shows, a click pins, the same spot unpins */
+        auto *tabs = page->findChild<QTabWidget *>();
+        QVERIFY(tabs);
+        QCOMPARE(tabs->tabText(0), QStringLiteral("Pixel"));
+        tabs->setCurrentIndex(0);
+        QLabel *pixel = nullptr;
+        for (QLabel *l : tabs->widget(0)->findChildren<QLabel *>()) pixel = l;
+        QVERIFY(pixel);
+        QVERIFY(pixel->text().contains(QLatin1String("Move over")));
+        const QPoint at(pic->width() / 2, pic->height() / 2);
+        QTest::mouseMove(pic, at);
+        QTRY_VERIFY_WITH_TIMEOUT(!pixel->text().contains(QLatin1String("Move over")), 1000);
+        QTest::mouseClick(pic, Qt::LeftButton, {}, at);
+        QTest::mouseMove(pic, at + QPoint(30, 30));
+        QVERIFY(!pixel->text().contains(QLatin1String("Move over")));   /* the pin stays */
+        shot(QStringLiteral("video-pixel"));
+        QTest::mouseClick(pic, Qt::LeftButton, {}, at);
+        QTest::mouseMove(pic, QPoint(-5, -5));
+
+        /* the tables */
+        QTableWidget *regs = nullptr, *lines = nullptr;
+        for (QTableWidget *t : page->findChildren<QTableWidget *>()) {
+            if (t->horizontalHeaderItem(0) && t->horizontalHeaderItem(0)->text() == QLatin1String("Name")) regs = t;
+            if (t->horizontalHeaderItem(0) && t->horizontalHeaderItem(0)->text() == QLatin1String("Line")) lines = t;
+        }
+        QVERIFY(regs && lines);
+        tabs->setCurrentIndex(1);
+        QTRY_VERIFY_WITH_TIMEOUT(regs->rowCount() > 0, 1000);
+        shot(QStringLiteral("video-registers"));
+        tabs->setCurrentIndex(2);
+        QTest::qWait(50);
+        shot(QStringLiteral("video-colours"));
+        tabs->setCurrentIndex(3);
+        QTRY_VERIFY_WITH_TIMEOUT(lines->rowCount() > 0, 1000);
+        shot(QStringLiteral("video-lines"));
+        tabs->setCurrentIndex(4);
+        QTest::qWait(50);
+        shot(QStringLiteral("video-timing"));
+        tabs->setCurrentIndex(0);
+
+        /* Break on writes: the byte and its mirror */
+        QTest::mouseMove(pic, at);
+        QTest::mouseClick(pic, Qt::LeftButton, {}, at);
+        QPushButton *brk = nullptr;
+        for (QPushButton *b : page->findChildren<QPushButton *>())
+            if (b->text() == QLatin1String("Break on writes")) brk = b;
+        QVERIFY(brk);
+        astrodebug_breakpoint bps[8];
+        QCOMPARE(astrodebug_breakpoint_list(m_d, bps, 8), 0);
+        QTest::mouseClick(brk, Qt::LeftButton);
+        QCOMPARE(astrodebug_breakpoint_list(m_d, bps, 8), 2);
+        astrodebug_breakpoint_clear(m_d);
+        QTest::mouseClick(pic, Qt::LeftButton, {}, at);     /* unpin */
+        zoom->setCurrentIndex(0);
         m_tabs->setCurrentIndex(0);
     }
 

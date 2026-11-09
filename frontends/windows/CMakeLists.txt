@@ -22,6 +22,7 @@ add_executable(fujinet-go-astrocade-windows WIN32
   keypad/keypad_window.c
   prefs.c
   debugger/dbg_window.c
+  debugger/dbg_video.c
   resource.rc
 )
 # The core is all C (unlike the sibling ports whose emulator had a C++ TU), so

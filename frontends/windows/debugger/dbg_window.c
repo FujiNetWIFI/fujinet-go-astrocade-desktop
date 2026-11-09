@@ -30,8 +30,8 @@
  * step the window waits a few milliseconds for the stop to settle so the
  * status does not flash "Running".
  *
- * The Video chip tab (the live screen, the screen RAM bitmap and the 512-pen
- * palette, and the decoded register text, all from astrovid.h) and the
+ * The Video chip tab (dbg_video.c, over core/include/astrovidtab.h: a picture
+ * in four views, an inspector, registers, colours, lines and timing) and the
  * FujiNet tab (every FujiBus packet on the BoIP link, both ways) carry over
  * from the earlier window. Address fields take a label, else bare hex, else
  * the engine's grammar ($ or 0x, registers, arithmetic); the register and
@@ -64,7 +64,7 @@
 
 #include "astrodebug.h"
 #include "astromemtools.h"
-#include "astrovid.h"
+#include "dbg_video.h"
 #include "resource.h"
 #include "../help/help_window.h"
 
@@ -150,7 +150,6 @@ static LRESULT astro_accent_customdraw(const NMCUSTOMDRAW *cd, int on)
 
 #define DBG_CLASS "AstroDebuggerWindow"
 #define DISASM_CLASS "AstroDbgDisasm"
-#define PIXELS_CLASS "AstroDbgPixels"
 #define MEMVIEW_CLASS "AstroDbgMem"
 #define PAGE_CLASS "AstroDbgPage"
 #define POP_CLASS "AstroDbgPop"
@@ -178,7 +177,6 @@ enum {
     IDC_CHK0, IDC_CHK_LAST = IDC_CHK0 + NCHECKS - 1,
     IDC_MEM_VIEW, IDC_MEM_GOTO, IDC_MEM_BACK, IDC_MEM_ON, IDC_MEM_WRITE,
     IDC_FOLLOW_PC, IDC_JUMP, IDC_DISASM,
-    IDC_VIEW_SCREEN, IDC_VIEW_BITMAP, IDC_VIEW_PAL, IDC_VID_STATE,
     IDC_BP_LIST, IDC_BP_REMOVE, IDC_BP_CLEAR, IDC_BP_TYPE, IDC_BP_START, IDC_BP_END, IDC_BP_COND,
     IDC_BP_ADD, IDC_BP_CLEAR_HITS,
     IDC_WT_ENTRY, IDC_WT_ADD, IDC_WT_LIST, IDC_WT_REMOVE, IDC_WT_MEM, IDC_WT_BRK,
@@ -190,25 +188,6 @@ enum {
     IDC_SAVE_KIND0, IDC_SAVE_KIND_LAST = IDC_SAVE_KIND0 + NSAVE - 1,
     IDC_LABEL_FIRST
 };
-
-/* The video renders are XRGB8888 words, which in memory is exactly the
- * BGRA byte order GDI's 32-bit DIBs want. */
-typedef struct {
-    const uint32_t *px; /* owned by the debugger struct */
-    int w, h;
-} pixel_view;
-
-/* One scratch buffer per picture, each sized to the MAX of all the renders
- * (an earlier version sized a shared one to just one and corrupted .bss). */
-#define PIC_SCREEN 0
-#define PIC_BITMAP 1
-#define PIC_PAL 2
-#define PIC_COUNT 3
-#define PAL_ROWS (512 / ASTROVID_PAL_COLS)
-_Static_assert(ASTROVID_SCREEN_W * ASTROVID_SCREEN_H <= ASTROVID_MAX_PIXELS, "screen render");
-_Static_assert(ASTROVID_BITMAP_W * ASTROVID_BITMAP_H <= ASTROVID_MAX_PIXELS, "bitmap render");
-_Static_assert(ASTROVID_PAL_COLS * ASTROVID_PAL_CELL * PAL_ROWS * ASTROVID_PAL_CELL <= ASTROVID_MAX_PIXELS,
-               "palette render");
 
 typedef struct {
     HWND hwnd, tabs;
@@ -250,13 +229,8 @@ typedef struct {
     astrodebug_line lines[DISASM_MAX];
     int line_count, pc_line;
 
-    /* video chip */
-    HWND view_pic[PIC_COUNT], pic_label[PIC_COUNT], vid_label, vid_state;
-    RECT pic_rc[PIC_COUNT];
-    astrovid_snapshot snap;
-    uint32_t px[PIC_COUNT][ASTROVID_MAX_PIXELS];
-    pixel_view pic[PIC_COUNT];
-    int vid_cols, vid_lines;    /* the register text's measured size */
+    /* video chip: the page holds its own controls (dbg_video.c) */
+    HWND video;
 
     /* breakpoints */
     HWND bp_hint, bp_stop, bp_remove, bp_clear, bp_clear_hits, bp_list, bp_empty;
@@ -599,6 +573,7 @@ static void make_fonts(debugger *d)
         EnumChildWindows(d->hwnd, refont_child, (LPARAM)map);
         for (p = 0; p < TAB_COUNT; p++)
             if (d->popped[p]) EnumChildWindows(d->popped[p], refont_child, (LPARAM)map);
+        if (d->video) dbg_video_fonts(d->video, d->ui, d->mono, d->dpi);
     }
     for (i = 0; i < 3; i++)
         if (old[i]) DeleteObject(old[i]);
@@ -1033,23 +1008,6 @@ static void refresh_disasm(debugger *d)
     InvalidateRect(d->disasm, NULL, FALSE);
 }
 
-static void refresh_video(debugger *d)
-{
-    static char state[4096];
-    int i;
-
-    astrovid_snapshot_get(&d->snap);
-    astrovid_render_screen(&d->snap, d->px[PIC_SCREEN], &d->pic[PIC_SCREEN].w, &d->pic[PIC_SCREEN].h);
-    astrovid_render_bitmap(&d->snap, d->px[PIC_BITMAP], &d->pic[PIC_BITMAP].w, &d->pic[PIC_BITMAP].h);
-    d->pic[PIC_PAL].h = astrovid_render_palette(&d->snap, d->px[PIC_PAL], ASTROVID_PAL_COLS, ASTROVID_PAL_CELL) *
-                        ASTROVID_PAL_CELL;
-    d->pic[PIC_PAL].w = ASTROVID_PAL_COLS * ASTROVID_PAL_CELL;
-    for (i = 0; i < PIC_COUNT; i++) InvalidateRect(d->view_pic[i], NULL, FALSE);
-
-    astrovid_format_state(&d->snap, state, (int)sizeof state);
-    set_text_at(d->vid_state, state, 0);
-}
-
 static void lv_set(HWND lv, int row, int col, const char *text)
 {
     wchar_t w[256];
@@ -1312,7 +1270,7 @@ static void refresh_tab(debugger *d, int page)
     case TAB_CART: refresh_cart(d); break;
     case TAB_TRACE: hist_refresh(d, 0, 0); break;
     case TAB_HISTORY: hist_refresh(d, 1, 0); break;
-    case TAB_VIDEO: refresh_video(d); break;
+    case TAB_VIDEO: if (d->video) dbg_video_refresh(d->video, 0); break;
     case TAB_FUJINET: refresh_fujinet(d, 0); break;
     default: break;
     }
@@ -1906,47 +1864,6 @@ static void on_accept(debugger *d, int id)
     }
 }
 
-/* ---- the video pictures ----------------------------------------------------------- */
-
-static void paint_pixels(HWND hwnd, HDC hdc)
-{
-    pixel_view *pv = (pixel_view *)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
-    RECT c;
-    GetClientRect(hwnd, &c);
-    if (pv && pv->px && pv->w > 0 && pv->h > 0) {
-        BITMAPINFO bmi;
-        memset(&bmi, 0, sizeof bmi);
-        bmi.bmiHeader.biSize = sizeof bmi.bmiHeader;
-        bmi.bmiHeader.biWidth = pv->w;
-        bmi.bmiHeader.biHeight = -pv->h; /* top-down */
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-        SetStretchBltMode(hdc, COLORONCOLOR); /* nearest: keep pixels */
-        StretchDIBits(hdc, 0, 0, c.right, c.bottom, 0, 0, pv->w, pv->h, pv->px, &bmi,
-                      DIB_RGB_COLORS, SRCCOPY);
-    } else {
-        FillRect(hdc, &c, (HBRUSH)GetStockObject(BLACK_BRUSH));
-    }
-}
-
-static LRESULT CALLBACK pixels_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
-{
-    if (msg == WM_PAINT) {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        paint_pixels(hwnd, hdc);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    if (msg == WM_PRINTCLIENT) {
-        paint_pixels(hwnd, (HDC)wp);
-        return 0;
-    }
-    if (msg == WM_ERASEBKGND) return 1;
-    return DefWindowProcA(hwnd, msg, wp, lp);
-}
-
 /* ---- the disassembly -------------------------------------------------------------- */
 
 /* One run of a row's text at a column. */
@@ -2187,33 +2104,6 @@ static HWND checkbox(debugger *d, const char *text, int id)
     return child(d, "BUTTON", text, BS_AUTOCHECKBOX | WS_TABSTOP, id, d->ui);
 }
 
-static HWND pixels(debugger *d, int id, pixel_view *pv, const uint32_t *px)
-{
-    HWND v = child(d, PIXELS_CLASS, "", 0, id, d->ui);
-    pv->px = px;
-    pv->w = 0;
-    pv->h = 0;
-    SetWindowLongPtrA(v, GWLP_USERDATA, (LONG_PTR)pv);
-    return v;
-}
-
-/* The video registers' text, measured once: its widest line (with room for
- * the counters to grow) and its line count. */
-static void measure_video_text(debugger *d)
-{
-    static char text[4096];
-    const char *c;
-    int cols = 0, lines = 1, run = 0;
-    astrovid_snapshot_get(&d->snap);
-    astrovid_format_state(&d->snap, text, (int)sizeof text);
-    for (c = text; *c; c++) {
-        if (*c == '\n') { lines++; run = 0; continue; }
-        if (++run > cols) cols = run;
-    }
-    d->vid_cols = cols + 6;
-    d->vid_lines = lines + 1;
-}
-
 static void size_columns(debugger *d)
 {
     static const int widths[3] = { 60, 700, 80 };
@@ -2404,20 +2294,9 @@ static void build_controls(debugger *d)
         d->h_text[i] = view(d, IDC_H_TEXT0 + i, WS_HSCROLL);
     }
 
-    /* Video chip: the registers' text, the screen, the screen RAM bitmap and
-     * the palette, each picture under a caption. */
+    /* Video chip: one child page with its own controls and controller */
     begin_page(d, TAB_VIDEO);
-    d->vid_label = label(d, "Registers", d->ui_bold, SS_LEFT);
-    d->vid_state = view(d, IDC_VID_STATE, WS_HSCROLL);
-    {
-        static const char *const caps[PIC_COUNT] = { "Screen", "Screen RAM", "Palette (512 pens)" };
-        static const int ids[PIC_COUNT] = { IDC_VIEW_SCREEN, IDC_VIEW_BITMAP, IDC_VIEW_PAL };
-        for (i = 0; i < PIC_COUNT; i++) {
-            d->pic_label[i] = label(d, caps[i], d->ui_bold, SS_LEFT | SS_ENDELLIPSIS);
-            d->view_pic[i] = pixels(d, ids[i], &d->pic[i], d->px[i]);
-        }
-    }
-    measure_video_text(d);
+    d->video = dbg_video_create(d->pg[TAB_VIDEO], d->ui, d->mono, d->dpi);
 
     /* FujiNet: the note and the log are UTF-8 (see wide_view_text) */
     begin_page(d, TAB_FUJINET);
@@ -2454,60 +2333,12 @@ static void show_page(debugger *d, int page)
     for (p = 0; p < TAB_COUNT; p++)   /* a tab's controls follow its container */
         ShowWindow(d->pg[p], d->popped[p] || p == page ? SW_SHOW : SW_HIDE);
     show_bp_list(d);
+    if (page == TAB_VIDEO && d->video) dbg_video_refresh(d->video, 1);
 }
 
 static void place(HWND h, int x, int y, int w, int hgt)
 {
     MoveWindow(h, x, y, w > 1 ? w : 1, hgt > 1 ? hgt : 1, TRUE);
-}
-
-/* Lays the three pictures out left to right, wrapping, at scale sc inside
- * w x h (each with its caption above). Returns whether they fit; fills rc. */
-static int flow_pictures(debugger *d, double sc, int x, int y, int w, int h, RECT rc[PIC_COUNT])
-{
-    static const int nat_w[PIC_COUNT] = { ASTROVID_SCREEN_W, ASTROVID_BITMAP_W,
-                                          ASTROVID_PAL_COLS * ASTROVID_PAL_CELL };
-    static const int nat_h[PIC_COUNT] = { ASTROVID_SCREEN_H, ASTROVID_BITMAP_H, PAL_ROWS * ASTROVID_PAL_CELL };
-    const int cap = S(d, 18), gap = S(d, 10);
-    int cx = x, cy = y, row_h = 0, i;
-    for (i = 0; i < PIC_COUNT; i++) {
-        const int pw = (int)(S(d, nat_w[i]) * sc), ph = (int)(S(d, nat_h[i]) * sc);
-        if (cx > x && cx + pw > x + w) {        /* wrap */
-            cx = x;
-            cy += row_h + gap;
-            row_h = 0;
-        }
-        if (pw > w) return 0;
-        SetRect(&rc[i], cx, cy + cap, cx + pw, cy + cap + ph);
-        cx += pw + gap;
-        if (cap + ph > row_h) row_h = cap + ph;
-    }
-    return cy + row_h <= y + h;
-}
-
-/* The largest scale at which the pictures fit the area (at least a third of
- * their own size, so they stay legible). */
-static void place_pictures(debugger *d, int x, int y, int w, int h)
-{
-    double lo = 0.33, hi = 4.0;
-    RECT rc[PIC_COUNT];
-    int i;
-    if (h < 1) h = 1;
-    if (!flow_pictures(d, lo, x, y, w, h, rc)) {
-        flow_pictures(d, lo, x, y, w, 1 << 20, d->pic_rc);
-    } else {
-        for (i = 0; i < 24; i++) {
-            const double mid = (lo + hi) / 2;
-            if (flow_pictures(d, mid, x, y, w, h, rc)) lo = mid;
-            else hi = mid;
-        }
-        flow_pictures(d, lo, x, y, w, h, d->pic_rc);
-    }
-    for (i = 0; i < PIC_COUNT; i++) {
-        const RECT *r = &d->pic_rc[i];
-        place(d->pic_label[i], r->left, r->top - S(d, 18), r->right - r->left, S(d, 18));
-        place(d->view_pic[i], r->left, r->top, r->right - r->left, r->bottom - r->top);
-    }
 }
 
 /* One tab's controls inside its container, which is pw x ph. */
@@ -2656,29 +2487,9 @@ static void layout_page(debugger *d, int page, int pw, int ph)
         break;
     }
 
-    case TAB_VIDEO: {
-        /* the registers at their own size on the left, the three pictures in
-         * the rest at the largest scale that fits (wrapping as the window
-         * narrows); too narrow for both side by side, the pictures go above
-         * the registers */
-        const int need_w = d->mono_w * d->vid_cols + S(d, 8) + 2 * GetSystemMetrics(SM_CXEDGE) +
-                           GetSystemMetrics(SM_CXVSCROLL);
-        const int need_h = d->mono_h * d->vid_lines + S(d, 4) + 2 * GetSystemMetrics(SM_CYEDGE) +
-                           GetSystemMetrics(SM_CYHSCROLL);
-        if (pw - need_w - S(d, 10) >= S(d, 220)) {
-            const int rh = need_h < ph - lh ? need_h : ph - lh;
-            place(d->vid_label, px, py, need_w, lh);
-            place(d->vid_state, px, py + lh, need_w, rh);
-            place_pictures(d, px + need_w + S(d, 10), py, pw - need_w - S(d, 10), ph);
-        } else {
-            int rh = need_h;
-            if (rh > ph / 2) rh = ph / 2;
-            place_pictures(d, px, py, pw, ph - rh - lh - S(d, 10));
-            place(d->vid_label, px, py + ph - rh - lh, pw, lh);
-            place(d->vid_state, px, py + ph - rh, pw, rh);
-        }
+    case TAB_VIDEO:
+        if (d->video) place(d->video, px, py, pw, ph);
         break;
-    }
 
     case TAB_FUJINET: {
         /* the packets left (a note and Clear over them), the link's state and
@@ -3325,7 +3136,6 @@ void astro_debugger_show(HWND parent, astrosession *session)
     if (!registered) {
         register_class(inst, DBG_CLASS, dbg_proc, (HBRUSH)(COLOR_BTNFACE + 1), CS_HREDRAW | CS_VREDRAW);
         register_class(inst, DISASM_CLASS, disasm_proc, NULL, CS_DBLCLKS);
-        register_class(inst, PIXELS_CLASS, pixels_proc, NULL, 0);
         register_class(inst, MEMVIEW_CLASS, memview_proc, NULL, 0);
         register_class(inst, PAGE_CLASS, page_proc, (HBRUSH)(COLOR_BTNFACE + 1), 0);
         register_class(inst, POP_CLASS, pop_proc, (HBRUSH)(COLOR_BTNFACE + 1), CS_HREDRAW | CS_VREDRAW);

@@ -236,6 +236,13 @@ void astro_video_render_line(astro_machine_t *m, int y)
     uint32_t *dest = &m->fb[(size_t)y * ASTRO_FB_WIDTH];
     int destx = 0;
 
+    /* what this line is drawn with, for the debugger's Video tab */
+    memcpy(m->line_regs[y].colors, m->colors, sizeof m->colors);
+    m->line_regs[y].colorsplit = m->colorsplit;
+    m->line_regs[y].bgdata = m->bgdata;
+    m->line_regs[y].vblank = m->vblank;
+    m->line_regs[y].mode = m->video_mode;
+
     /* screen line -> astrocade line (MAME mame_vpos_to_astrocade_vpos) */
     int effy = y - ASTRO_VERT_OFFSET;
     if (effy < 0)

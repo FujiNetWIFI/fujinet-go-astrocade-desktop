@@ -24,6 +24,8 @@
 #ifndef ASTRO_INTERNAL_H
 #define ASTRO_INTERNAL_H
 
+#include "astrovid.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -163,6 +165,7 @@ struct astro_machine {
 
     /* ---- output ---- */
     uint32_t fb[ASTRO_FB_WIDTH * ASTRO_FB_HEIGHT];  /* XRGB8888 */
+    astrovid_line line_regs[ASTRO_FB_HEIGHT];       /* each line's registers, this frame */
     uint32_t palette[512];
 
     /* ---- debugger ----

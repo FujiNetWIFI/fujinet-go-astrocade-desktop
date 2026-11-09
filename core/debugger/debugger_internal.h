@@ -34,6 +34,15 @@ int astrodebug_label_completions(astrodebug *d, const char *word, char *dst,
 /* Screen RAM (the video chip's 4K): offsets wrap at $1000. */
 int astrodebug_vram_read(astrodebug *d, uint16_t addr, uint8_t *dst, int n);
 int astrodebug_vram_write(astrodebug *d, uint16_t addr, const uint8_t *src, int n);
+/* Fill a snapshot from a machine (the caller owns the right to read it: the
+ * machine thread, or the machine parked). */
+struct astro_machine;
+void astrovid_snapshot_from(const struct astro_machine *m, astrovid_snapshot *snap);
+/* Once-a-frame capture for the Video tab, taken on the machine thread while
+ * at least one reader has it enabled. Returns 1 and a copy if the serial
+ * moved past *serial_inout. */
+void astro_host_capture_enable(int on);
+int  astro_host_capture_get(astrovid_capture *dst, uint64_t *serial_inout);
 /* The video chip snapshot, under the engine lock. */
 void astrodebug_video_snapshot(astrodebug *d, astrovid_snapshot *out);
 

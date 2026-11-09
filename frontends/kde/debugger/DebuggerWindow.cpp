@@ -36,6 +36,7 @@
  */
 
 #include "DebuggerWindow.h"
+#include "VideoTab.h"
 #include "../help/HelpWindow.h"
 
 extern "C" {
@@ -74,6 +75,7 @@ extern "C" {
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 
 #define DISASM_WINDOW 64        /* lines fetched; as many show as fit */
@@ -381,7 +383,7 @@ DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
     connect(m_tabs, &QTabWidget::currentChanged, this, [this, setHelpContext](int) {
         const int page = currentTab();
         setHelpContext(page);
-        if (page == TAB_VIDEO) m_haveSnap = false;
+        if (page == TAB_VIDEO) m_videoForce = true;
         if (page == TAB_HISTORY) m_hSeen[1] = -1;
         refreshPage(page, false);
         if (page == TAB_CONSOLE) m_conIn->setFocus();
@@ -674,35 +676,8 @@ QWidget *DebuggerWindow::buildDisasm()
 
 QWidget *DebuggerWindow::buildVideo()
 {
-    auto *vid = new QWidget;
-    auto *v = new QVBoxLayout(vid);
-    auto framed = [](const char *title, QWidget *inner) {
-        auto *box = new QGroupBox(QString::fromUtf8(title));
-        auto *bl = new QVBoxLayout(box);
-        bl->addWidget(inner);
-        return box;
-    };
-    auto *pics = new QHBoxLayout;
-    m_screen = new QLabel;
-    m_screen->setMinimumSize(ASTROVID_SCREEN_W, ASTROVID_SCREEN_H);
-    m_bitmap = new QLabel;
-    m_bitmap->setMinimumSize(ASTROVID_BITMAP_W, ASTROVID_BITMAP_H);
-    pics->addWidget(framed("Screen", m_screen));
-    pics->addWidget(framed("Screen RAM", m_bitmap));
-    pics->addStretch(1);
-    v->addLayout(pics);
-    m_palette = new QLabel;
-    m_palette->setMinimumSize(ASTROVID_PAL_COLS * ASTROVID_PAL_CELL, 16 * ASTROVID_PAL_CELL);
-    v->addWidget(framed("Palette (512 pens)", m_palette));
-    m_vidText = monoView();
-    m_vidText->setMinimumHeight(260);
-    v->addWidget(framed("Registers", m_vidText), 1);
-
-    /* the page can outgrow the window on a short screen: it scrolls */
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setWidget(vid);
-    return scroll;
+    m_video = new VideoTab;
+    return m_video;
 }
 
 QWidget *DebuggerWindow::buildBreaks()
@@ -1099,37 +1074,11 @@ void DebuggerWindow::refreshDisasm()
     m_disasm->setExtraSelections(sel);
 }
 
-namespace {
-QPixmap pixmapOf(const uint32_t *px, int w, int h)
+/* The Video tab takes its own snapshot; a stopped machine redraws only when
+ * the core says something changed. */
+void DebuggerWindow::refreshVideo(bool force)
 {
-    QImage img(reinterpret_cast<const uchar *>(px), w, h, w * 4, QImage::Format_RGB32);
-    return QPixmap::fromImage(img.copy());
-}
-} // namespace
-
-void DebuggerWindow::refreshVideo()
-{
-    static astrovid_snapshot snap;
-    static uint32_t scratch[ASTROVID_MAX_PIXELS];
-    int w, h;
-
-    astrovid_snapshot_get(&snap);
-    /* the snapshot is zeroed before it is filled, so a byte compare is exact;
-     * an unchanged chip means the pictures would come out the same */
-    if (m_haveSnap && memcmp(&snap, &m_lastSnap, sizeof snap) == 0) return;
-    m_lastSnap = snap;
-    m_haveSnap = true;
-
-    astrovid_render_screen(&snap, scratch, &w, &h);
-    m_screen->setPixmap(pixmapOf(scratch, w, h));
-    astrovid_render_bitmap(&snap, scratch, &w, &h);
-    m_bitmap->setPixmap(pixmapOf(scratch, ASTROVID_BITMAP_W, h));
-    const int rows = astrovid_render_palette(&snap, scratch, ASTROVID_PAL_COLS, ASTROVID_PAL_CELL);
-    m_palette->setPixmap(pixmapOf(scratch, ASTROVID_PAL_COLS * ASTROVID_PAL_CELL, rows * ASTROVID_PAL_CELL));
-
-    static char text[4096];
-    astrovid_format_state(&snap, text, int(sizeof text));
-    setText(m_vidText, QString::fromLatin1(text));
+    m_video->refresh(force);
 }
 
 void DebuggerWindow::refreshBps()
@@ -1403,7 +1352,7 @@ void DebuggerWindow::refreshPage(int page, bool live)
     switch (page) {
     case TAB_DISASM: if (!live) refreshDisasm(); break;
     case TAB_MEMORY: refreshMem(); break;
-    case TAB_VIDEO: refreshVideo(); break;
+    case TAB_VIDEO: refreshVideo(std::exchange(m_videoForce, false)); break;
     case TAB_BREAKS: refreshBps(); break;
     case TAB_WATCHES: refreshWatches(false); break;
     case TAB_CART: refreshCart(); break;
@@ -1906,7 +1855,7 @@ void DebuggerWindow::popOut(int tab)
     new QShortcut(QKeySequence(Qt::Key_F8), win, [this] { stepAnd([this] { astrodebug_step_over(m_dbg); }); });
     new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F8), win, [this] { stepAnd([this] { astrodebug_step_out(m_dbg); }); });
     if (isVisible()) win->show();
-    if (tab == TAB_VIDEO) m_haveSnap = false;
+    if (tab == TAB_VIDEO) m_videoForce = true;
     if (tab == TAB_HISTORY) m_hSeen[1] = -1;
     refreshPage(tab, false);
 }
@@ -1923,7 +1872,7 @@ void DebuggerWindow::dock(int tab)
     page->setParent(nullptr);
     m_tabs->insertTab(pos, page, QString::fromUtf8(kTabs[tab].label).replace(QLatin1Char('&'), QLatin1String("&&")));
     m_tabs->setCurrentIndex(pos);
-    if (tab == TAB_VIDEO) m_haveSnap = false;
+    if (tab == TAB_VIDEO) m_videoForce = true;
     if (tab == TAB_HISTORY) m_hSeen[1] = -1;
     refreshPage(tab, false);
 }

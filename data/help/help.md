@@ -414,8 +414,35 @@ once; the machine has to be stopped.
 <!-- context: debugger/video -->
 ## Video chip
 
-The Astrocade's data-chip video: its registers, the colour palette and the
-screen RAM as the chip draws it.
+The Astrocade's data-chip video. The picture is on the left and five sections
+are on the right. Games can change the colours, the colour boundary, the last
+active line and the mode between lines (from the scanline interrupt, or timed to
+the beam), so the console records the registers each line was drawn with and the
+views use them.
+
+| View | Shows |
+|---|---|
+| Display | The last finished frame, as the screen showed it |
+| Decoded | Screen RAM drawn through each line's own registers: 160x102, or 320x204 in high-res |
+| Beam | Stopped only: this frame as far as the beam has drawn it, the last one dimmed below |
+| Values | The raw pens 0 to 3, warm for the right set (COL0R to COL3R) and cool for the left set (COL0L to COL3L) |
+
+**Zoom** goes from 1 to 16 times, or **Fit**. **Overlays** switch on a grid, the
+colour boundary, the last active line (VERBL), the line the scanline interrupt
+fires on, the beam, the screen RAM bytes written lately (they fade), the bytes that
+changed since the last refresh, and the outline of the data area.
+
+Point at a pixel to see it in **Pixel**: its screen RAM address and the magic-window
+address of the same byte, which two bits, which colour register and so which side of
+the boundary, the palette entry and the colour, and that line's own registers. Click to
+pin it, click again to let go. Double-click it, or press **Break on writes**, to stop the
+machine when anything writes that byte.
+
+**Registers** decodes each video and sound register; one that changed in the last few
+refreshes is highlighted. **Colours** shows the eight colour registers with the pixels that
+use them and the 256 colours the console can reach; **Break on OUT** stops the machine when
+a register is written. **Lines** lists the lines where the colours, the boundary, VERBL or the
+mode change. **Timing** shows the beam.
 
 <!-- context: debugger/breakpoints -->
 ## Breakpoints

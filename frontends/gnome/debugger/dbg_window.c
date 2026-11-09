@@ -14,8 +14,8 @@
  *   5 Cart & I/O       the cartridge, the memory map, the ports and the chip
  *   6 Trace            the instruction ring, live while the machine runs
  *   7 History          the same ring, read when the machine stops
- *   8 Video chip       the screen, the screen-RAM bitmap, the 512-pen
- *                      palette and the decoded data-chip registers
+ *   8 Video chip       the picture (four views, overlays, hover/pin), and
+ *                      pixel, registers, colours, lines and timing sections
  *   9 FujiNet          every FujiBus packet, with the BoIP link, with hex
  * The registers (editable) and flags sit under the tabs on every tab. Any
  * tab can be popped out into a window of its own (Pop Out, then Dock; closing
@@ -49,7 +49,7 @@
 #include "astrodebug.h"
 #include "../window.h"
 #include "../help/help_window.h"
-#include "astrovid.h"
+#include "dbg_video.h"
 #include "astromemtools.h"
 
 #define DISASM_WINDOW 48
@@ -113,13 +113,6 @@ typedef struct {
     int line_addr[DISASM_WINDOW * 2];   /* per buffer line; -1 for a label line */
     int line_count;
     int selected;             /* the selected row's address, -1 none */
-
-    /* video chip */
-    GtkPicture *pic_screen, *pic_bitmap, *pic_pal;
-    GtkTextView *vid_state;
-    astrovid_snapshot last_snap;   /* what the tab last drew */
-    gboolean have_snap;
-    uint32_t scratch[ASTROVID_MAX_PIXELS];   /* the MAX of every render */
 
     /* breakpoints */
     GtkListBox *bp_list;
@@ -611,48 +604,9 @@ static void refresh_disasm(DbgWin *w)
     }
 }
 
-static GdkTexture *texture_from_scratch(DbgWin *w, int tw, int th)
-{
-    GBytes *bytes = g_bytes_new(w->scratch, (gsize)tw * th * sizeof(uint32_t));
-#if G_BYTE_ORDER == G_BIG_ENDIAN
-    GdkMemoryFormat fmt = GDK_MEMORY_X8R8G8B8;
-#else
-    GdkMemoryFormat fmt = GDK_MEMORY_B8G8R8X8;
-#endif
-    GdkTexture *tex = gdk_memory_texture_new(tw, th, fmt, bytes, (gsize)tw * sizeof(uint32_t));
-    g_bytes_unref(bytes);
-    return tex;
-}
-
-static void set_picture(GtkPicture *pic, GdkTexture *tex)
-{
-    gtk_picture_set_paintable(pic, GDK_PAINTABLE(tex));
-    g_object_unref(tex);
-}
-
-/* Redrawn only when the chip's state changed (the snapshot is zeroed before
- * it is filled, so a byte compare is exact). */
 static void refresh_video(DbgWin *w)
 {
-    static astrovid_snapshot snap;
-    static char text[4096];
-    int tw, th, rows;
-
-    astrovid_snapshot_get(&snap);
-    if (w->have_snap && memcmp(&snap, &w->last_snap, sizeof snap) == 0)
-        return;
-    w->last_snap = snap;
-    w->have_snap = TRUE;
-
-    astrovid_render_screen(&snap, w->scratch, &tw, &th);
-    set_picture(w->pic_screen, texture_from_scratch(w, tw, th));
-    astrovid_render_bitmap(&snap, w->scratch, &tw, &th);
-    set_picture(w->pic_bitmap, texture_from_scratch(w, ASTROVID_BITMAP_W, th));
-    rows = astrovid_render_palette(&snap, w->scratch, ASTROVID_PAL_COLS, ASTROVID_PAL_CELL);
-    set_picture(w->pic_pal, texture_from_scratch(w, ASTROVID_PAL_COLS * ASTROVID_PAL_CELL,
-                                                 rows * ASTROVID_PAL_CELL));
-    astrovid_format_state(&snap, text, (int)sizeof text);
-    set_text(w->vid_state, text);
+    dbg_video_refresh(w->pages[TAB_VIDEO], FALSE);
 }
 
 /* The cartridge, then the memory map, then the ports and the data chip. */
@@ -2126,39 +2080,6 @@ static GtkWidget *build_disasm(DbgWin *w)
     return padded(box);
 }
 
-static GtkWidget *build_video(DbgWin *w)
-{
-    GtkWidget *grid = gtk_grid_new(), *scroll, *outer;
-
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
-    gtk_widget_set_margin_start(grid, 8);
-    gtk_widget_set_margin_top(grid, 8);
-    gtk_widget_set_margin_end(grid, 8);
-    gtk_widget_set_margin_bottom(grid, 8);
-
-    w->pic_screen = GTK_PICTURE(gtk_picture_new());
-    gtk_widget_set_size_request(GTK_WIDGET(w->pic_screen), 352, 240);
-    w->pic_bitmap = GTK_PICTURE(gtk_picture_new());
-    gtk_widget_set_size_request(GTK_WIDGET(w->pic_bitmap), 320, 204);
-    w->pic_pal = GTK_PICTURE(gtk_picture_new());
-    gtk_picture_set_content_fit(w->pic_pal, GTK_CONTENT_FIT_FILL);
-    gtk_widget_set_size_request(GTK_WIDGET(w->pic_pal), ASTROVID_PAL_COLS * ASTROVID_PAL_CELL,
-                                16 * ASTROVID_PAL_CELL);
-    gtk_widget_set_halign(GTK_WIDGET(w->pic_pal), GTK_ALIGN_START);
-
-    gtk_grid_attach(GTK_GRID(grid), headed("Screen", GTK_WIDGET(w->pic_screen)), 0, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), headed("Screen RAM", GTK_WIDGET(w->pic_bitmap)), 1, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), headed("Palette (512 pens)", GTK_WIDGET(w->pic_pal)), 0, 1, 2, 1);
-    scroll = mono_view(&w->vid_state, FALSE);
-    gtk_widget_set_size_request(scroll, -1, 360);
-    gtk_grid_attach(GTK_GRID(grid), headed("Registers", scroll), 0, 2, 2, 1);
-
-    outer = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(outer), grid);
-    return outer;
-}
-
 static GtkWidget *build_breaks(DbgWin *w)
 {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -2425,7 +2346,7 @@ void astro_debugger_show(GtkWindow *parent, astrosession *session)
     w->pages[TAB_CART] = build_cart(w);
     w->pages[TAB_TRACE] = build_hist(w, 0);
     w->pages[TAB_HISTORY] = build_hist(w, 1);
-    w->pages[TAB_VIDEO] = build_video(w);
+    w->pages[TAB_VIDEO] = dbg_video_new();
     w->pages[TAB_FUJINET] = build_fujinet(w);
     for (i = 0; i < NTABS; i++) {
         g_object_set_data(G_OBJECT(w->pages[i]), "tab", GINT_TO_POINTER(i));

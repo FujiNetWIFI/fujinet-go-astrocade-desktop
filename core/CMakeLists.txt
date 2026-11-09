@@ -42,6 +42,7 @@ set(ASTRO_CORE_SOURCES
   debugger/fujitrace.c
   debugger/vidview.c
   debugger/memtools.c
+  debugger/vidtab.c
   "${GEN}/fujimail.c"
   "${GEN}/fujibus.c"
   "${GEN}/astromap.c"
@@ -84,7 +85,7 @@ set_source_files_properties(
   astro/machine.c astro/video.c astro/sound.c astro/host.c astro/fujinet_cart.c
   debugger/debugger.c debugger/prompt.c debugger/expr.c debugger/symbols.c
   debugger/symbols_builtin.c debugger/z80dasm.c debugger/fujitrace.c
-  debugger/vidview.c debugger/memtools.c
+  debugger/vidview.c debugger/memtools.c debugger/vidtab.c
   PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # ---- the Bally system ROMs -------------------------------------------------
@@ -288,6 +289,10 @@ set_tests_properties(session_test PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(memtools_test tests/memtools_test.c)
 target_link_libraries(memtools_test astro_core)
 add_test(NAME memtools_test COMMAND memtools_test)
+
+add_executable(vidtab_test tests/vidtab_test.c)
+target_link_libraries(vidtab_test astro_core)
+add_test(NAME vidtab_test COMMAND vidtab_test)
 
 add_executable(help_test tests/help_test.c)
 target_link_libraries(help_test astro_session)

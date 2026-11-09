@@ -195,6 +195,13 @@ check_debugger(int p)
 
     for (size_t k = 0; k < sizeof words / sizeof *words; k++)
         require(p, "debugger", "button", words[k]);
+    {
+        static const char *const vwords[] = { "Display", "Decoded", "Beam", "Values", "Zoom", "Fit", "Overlays",
+                                              "Pixel", "Registers", "Colours", "Lines", "Timing",
+                                              "Break on writes", "Break on OUT" };
+        for (size_t k = 0; k < sizeof vwords / sizeof *vwords; k++)
+            require(p, "debugger/video", "control", vwords[k]);
+    }
     CHECK(astrohelp_find("debugger/console", &t, &b) == 0, "no debugger/console");
     {
         const astrohelp_topic *tp = astrohelp_topic_at(t);

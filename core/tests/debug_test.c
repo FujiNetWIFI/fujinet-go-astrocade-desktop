@@ -38,6 +38,7 @@ static unsigned alarm(unsigned s) { (void)s; return 0; }
 #include "astro_internal.h"
 #include "astrodebug.h"
 #include "astromemtools.h"
+#include "astrovidtab.h"
 #include "astrovid.h"
 #include "host.h"
 
@@ -707,6 +708,60 @@ int main(int argc, char **argv)
         astrovid_snapshot_get(snap);
         CHECK(snap->interrupt_scanline != 0 || snap->vblank != 0, "video chip registers exposed");
         free(snap);
+    }
+
+    /* ---- the Video tab's controller against the live machine ------------------------------------------- */
+    {
+        astrovid_tab *vt = astrovid_tab_new();
+        const uint32_t *pic;
+        int w, h, same = 1;
+        astrovid_tab_set_zoom(vt, 1);
+        astrovid_tab_set_overlays(vt, 0);
+        /* let a few frames finish with the tab open (it asks the machine to capture them) */
+        astrodebug_resume(D);
+        sleep_ms(300);
+        astrodebug_stop(D);
+        for (int i = 0; i < 100 && !astrodebug_is_stopped(D); i++) sleep_ms(20);
+        restart_prog();
+        CHECK(GO(astrodebug_frame(D, 1)), "stopped at a frame boundary");
+        astrovid_tab_set_view(vt, ASTROVID_V_DISPLAY);
+        CHECK(astrovid_tab_refresh(vt, 1) & ASTROVID_TAB_PICTURE, "tab refresh");
+        pic = astrovid_tab_picture(vt, &w, &h);
+        CHECK(pic && w == 352 && h == 240, "Display is the full frame");
+        if (pic) {
+            const astro_machine_t *m = astro_host_machine();
+            for (int i = 0; i < 352 * 240; i++)
+                if ((pic[i] & 0xffffff) != (m->fb[i] & 0xffffff)) { same = 0; break; }
+        }
+        CHECK(same, "Display equals the machine's framebuffer at a frame boundary");
+        /* Decoded must agree with Display inside the data area when the registers hold still */
+        astrovid_tab_set_view(vt, ASTROVID_V_DECODED);
+        astrovid_tab_refresh(vt, 1);
+        {
+            const uint32_t *dec = astrovid_tab_picture(vt, &w, &h);
+            const astro_machine_t *m = astro_host_machine();
+            int bad = 0, checked = 0, step = 2 - (m->video_mode & 1);
+            for (int y = 0; dec && y < h; y += 7)
+                for (int x = 0; x < w; x += 5) {
+                    const int sx = 16 + x * step, sy = 22 + y * step;
+                    if (sy < 240 && sx < 352 && y * step < m->vblank) {
+                        checked++;
+                        if ((dec[(size_t)y * w + x] & 0xffffff) != (m->fb[(size_t)sy * 352 + sx] & 0xffffff))
+                            bad++;
+                    }
+                }
+            CHECK(checked > 50 && bad == 0, "Decoded agrees with the machine's own picture");
+        }
+        astrodebug_breakpoint_clear(D);
+        astrovid_tab_hover(vt, 5, 5);
+        CHECK(astrovid_tab_break_on_pixel(vt) >= 0, "break on a pixel's writes adds breakpoints");
+        {
+            astrodebug_breakpoint bl[8];
+            CHECK(astrodebug_breakpoint_list(D, bl, 8) == 2 && (bl[0].type & ASTRODEBUG_BP_WRITE) &&
+                  bl[0].start >= 0x4000 && bl[1].start == bl[0].start - 0x4000, "...at $4000+off and its mirror");
+        }
+        astrodebug_breakpoint_clear(D);
+        astrovid_tab_free(vt);
     }
 
     /* ---- detach resumes ----------------------------------------------------------------------------------------------------- */

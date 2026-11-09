@@ -35,9 +35,9 @@
  * (Run to Cursor) the system selection colour underlined, labels and comments
  * grey; the Run button is the dark red while stopped.
  *
- * The Video chip tab shows the live screen, the screen RAM as a raw bitmap
- * and the 512-pen palette as pictures, over the decoded data-chip and sound
- * register text (astrovid_*). The FujiNet tab shows every FujiBus packet
+ * The Video chip tab (VideoTab.m, over astrovidtab.h) shows the picture in
+ * four views with overlays, hover/pin inspection, the registers, the colours,
+ * the per-line registers and the timing. The FujiNet tab shows every FujiBus packet
  * between the console and FujiNet, both ways, with hex, beside the link state
  * (astrodebug_fujinet_*).
  *
@@ -50,6 +50,7 @@
 
 #import "DebuggerWindow.h"
 #import "../help/HelpWindow.h"
+#import "VideoTab.h"
 
 #import <QuartzCore/QuartzCore.h>
 
@@ -86,7 +87,6 @@
 #define HIST_SHOWN 2000        /* the newest matching lines a tab shows */
 #define TRACE_TICKS 4          /* 4 x 100 ms: the Trace tab's live refresh */
 #define LIVE_TICKS 5           /* 5 x 100 ms: the live refresh while running */
-#define PAL_ROWS 16            /* 512 pens / 32 columns */
 
 static DebuggerWindow *g_debugger;
 
@@ -162,27 +162,6 @@ static NSColor *breakpointRed(void)
 }
 @end
 
-/* XRGB8888 pixels (0x00RRGGBB words, rows `stride` words apart) as an image
- * of w x h. The pixels are copied, so the caller's scratch can be reused for
- * the next picture. On a little-endian host the bytes run B,G,R,X, which
- * kCGBitmapByteOrder32Little + AlphaNoneSkipFirst reads exactly (the same as
- * the main display). */
-static NSImage *imageFromXRGB(const uint32_t *px, int w, int h, int stride)
-{
-    NSData *data = [NSData dataWithBytes:px length:(NSUInteger)stride * (NSUInteger)h * 4];
-    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
-    CGImageRef cg = CGImageCreate((size_t)w, (size_t)h, 8, 32, (size_t)stride * 4, space,
-                                  kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little, provider, NULL, false,
-                                  kCGRenderingIntentDefault);
-    CGDataProviderRelease(provider);
-    CGColorSpaceRelease(space);
-    if (!cg) return nil;
-    NSImage *img = [[NSImage alloc] initWithCGImage:cg size:NSMakeSize(w, h)];
-    CGImageRelease(cg);
-    return img;
-}
-
 @interface DebuggerWindow () <NSTabViewDelegate>
 - (instancetype)initWithSession:(astrosession *)session;
 - (void)show;
@@ -244,10 +223,8 @@ static NSImage *imageFromXRGB(const uint32_t *px, int w, int h, int stride)
     int _lineCount;
     int _selected;              /* the selected line's address, or -1 */
 
-    NSImageView *_screenView, *_bitmapView, *_palView;
-    NSTextView *_vidState;
-    astrovid_snapshot _lastSnap;    /* what the Video tab last drew */
-    BOOL _haveSnap;
+    AstroVideoTab *_video;          /* the Video chip tab (VideoTab.m) */
+    BOOL _videoShown;               /* it was on show at the last refresh */
 
     NSPopUpButton *_bpType;
     NSTextField *_bpStart, *_bpEnd, *_bpCond, *_bpErr, *_bpStop;
@@ -508,18 +485,6 @@ static void setStyledText(NSTextView *view, NSAttributedString *text)
     p.action = sel;
     [p setRefusesFirstResponder:YES];
     return p;
-}
-
-/* A picture, scaled up crisp: nearest-neighbour, so the pixels stay square. */
-- (NSImageView *)pixelView:(int)w height:(int)h
-{
-    NSImageView *v = [[NSImageView alloc] init];
-    v.imageScaling = NSImageScaleAxesIndependently;
-    v.wantsLayer = YES;
-    v.layer.magnificationFilter = kCAFilterNearest;
-    [v.widthAnchor constraintEqualToConstant:w].active = YES;
-    [v.heightAnchor constraintEqualToConstant:h].active = YES;
-    return v;
 }
 
 static NSStackView *hstack(NSArray<NSView *> *views)
@@ -880,43 +845,11 @@ static void fill(NSStackView *stack, NSView *view)
     return v;
 }
 
-/* The pictures (the live screen, the screen RAM as a bitmap, the palette) over
- * the decoded data-chip and sound registers: one page, which scrolls when the
- * window is smaller than it. */
+/* The Video chip tab: a controller (core astrovidtab.h) behind its own views. */
 - (NSView *)buildVideo
 {
-    _screenView = [self pixelView:ASTROVID_SCREEN_W height:ASTROVID_SCREEN_H];
-    _bitmapView = [self pixelView:ASTROVID_BITMAP_W height:ASTROVID_BITMAP_H];
-    NSStackView *screenBox = vstack(@[ [self label:@"Screen"], _screenView ]);
-    NSStackView *bitmapBox = vstack(@[ [self label:@"Screen RAM"], _bitmapView ]);
-    NSStackView *pics = hstack(@[ screenBox, bitmapBox ]);
-    pics.alignment = NSLayoutAttributeTop;
-    pics.spacing = 12;
-
-    /* 1:1 with the rendered cell grid so the pens stay crisp */
-    _palView = [self pixelView:ASTROVID_PAL_COLS * ASTROVID_PAL_CELL height:PAL_ROWS * ASTROVID_PAL_CELL];
-    NSStackView *palBox = vstack(@[ [self label:@"Palette (512 pens)"], _palView ]);
-
-    NSScrollView *stateScroll;
-    _vidState = monoView(&stateScroll, YES);
-    [stateScroll.widthAnchor constraintEqualToConstant:700].active = YES;
-    [stateScroll.heightAnchor constraintEqualToConstant:300].active = YES;
-    NSStackView *stateBox = vstack(@[ [self label:@"Registers"], stateScroll ]);
-
-    /* the page is the scroll view's document, pinned to its top left; its
-     * own size is what its views ask for */
-    NSStackView *page = vstack(@[ pics, palBox, stateBox ]);
-    page.spacing = 12;
-    page.translatesAutoresizingMaskIntoConstraints = NO;
-    NSScrollView *outer = [[NSScrollView alloc] init];
-    outer.hasVerticalScroller = YES;
-    outer.hasHorizontalScroller = YES;
-    outer.drawsBackground = NO;
-    outer.documentView = page;
-    NSClipView *clip = outer.contentView;
-    [page.topAnchor constraintEqualToAnchor:clip.topAnchor].active = YES;
-    [page.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor].active = YES;
-    return outer;
+    _video = [[AstroVideoTab alloc] init];
+    return _video.view;
 }
 
 /* One breakpoint-table cell: a fixed-width monospace label, or (width 0) the
@@ -1710,6 +1643,7 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
 - (void)refreshTab
 {
     [self refreshCpu];
+    if (![self tabVisible:TAB_VIDEO]) _videoShown = NO;
     for (int t = 0; t < NUM_TABS; t++)
         if ([self tabVisible:t]) [self refreshTabAt:t];
 }
@@ -1880,39 +1814,12 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     [scroll reflectScrolledClipView:scroll.contentView];
 }
 
-/* The three pictures and the register text. The snapshot is zeroed before it
- * is filled, so a byte compare is exact: an unchanged chip means the pictures
- * would come out the same. */
+/* The Video chip tab: the controller says what changed. Forced when the tab
+ * has just come on show. */
 - (void)refreshVideo
 {
-    /* one scratch for every render, sized to the MAX of them (astrovid.h) */
-    static uint32_t scratch[ASTROVID_MAX_PIXELS];
-    static char text[4096];
-    astrovid_snapshot snap;
-    int w = 0, h = 0;
-
-    astrovid_snapshot_get(&snap);
-    if (_haveSnap && memcmp(&snap, &_lastSnap, sizeof snap) == 0) return;
-    _lastSnap = snap;
-    _haveSnap = YES;
-
-    astrovid_render_screen(&snap, scratch, &w, &h);
-    if (w > 0 && w <= ASTROVID_SCREEN_W && h > 0 && h <= ASTROVID_SCREEN_H)
-        _screenView.image = imageFromXRGB(scratch, w, h, ASTROVID_SCREEN_W);
-
-    /* the rows are ASTROVID_BITMAP_W apart whatever the mode's width */
-    astrovid_render_bitmap(&snap, scratch, &w, &h);
-    if (w > 0 && w <= ASTROVID_BITMAP_W && h > 0 && h <= ASTROVID_BITMAP_H)
-        _bitmapView.image = imageFromXRGB(scratch, w, h, ASTROVID_BITMAP_W);
-
-    const int rows = astrovid_render_palette(&snap, scratch, ASTROVID_PAL_COLS, ASTROVID_PAL_CELL);
-    if (rows > 0 && rows * ASTROVID_PAL_CELL * ASTROVID_PAL_COLS * ASTROVID_PAL_CELL <= ASTROVID_MAX_PIXELS)
-        _palView.image = imageFromXRGB(scratch, ASTROVID_PAL_COLS * ASTROVID_PAL_CELL, rows * ASTROVID_PAL_CELL,
-                                       ASTROVID_PAL_COLS * ASTROVID_PAL_CELL);
-
-    text[0] = '\0';
-    astrovid_format_state(&snap, text, (int)sizeof text);
-    setText(_vidState, cstr(text), NO);
+    [_video refreshForce:!_videoShown];
+    _videoShown = YES;
 }
 
 - (void)refreshBps

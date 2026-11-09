@@ -34,6 +34,8 @@ extern "C" {
 #include "astrovid.h"
 }
 
+class VideoTab;
+
 class DebuggerWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -69,7 +71,7 @@ private:
     void refreshCpu();
     void refreshMem();
     void refreshDisasm();
-    void refreshVideo();
+    void refreshVideo(bool force);
     void refreshBps();
     void refreshWatches(bool force);
     void refreshCart();
@@ -158,10 +160,8 @@ private:
     std::vector<uint16_t> m_lineAddr;
 
     /* video chip */
-    QLabel *m_screen = nullptr, *m_bitmap = nullptr, *m_palette = nullptr;
-    QPlainTextEdit *m_vidText = nullptr;
-    astrovid_snapshot m_lastSnap;       /* what the Video tab last drew */
-    bool m_haveSnap = false;
+    VideoTab *m_video = nullptr;
+    bool m_videoForce = true;           /* the tab was just shown: redraw everything */
 
     /* breakpoints */
     QTableWidget *m_bpTable = nullptr;

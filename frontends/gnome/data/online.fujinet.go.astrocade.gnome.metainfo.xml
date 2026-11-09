@@ -47,6 +47,13 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.10.0" date="2026-11-09">
+      <description>
+        <p>
+          Video chip tab rebuilt. Display shows the last finished frame as the screen drew it, Decoded redraws screen RAM through the registers each line was drawn with (so games that change colours, the colour boundary or VERBL mid-frame look right), Beam shows this frame up to the beam, and Values shows the raw pens. Zoom to 16x, overlays for the grid, colour boundary, VERBL, interrupt line, beam and recent writes, and a pixel inspector with Break on writes. Registers are decoded with changes highlighted, Colours shows the eight colour registers and the 256 reachable pens with usage counts, and Lines lists where the colours change. Fixed: the Screen RAM picture used the wrong colour set and was garbled in low-res on Windows.
+        </p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-11-09">
       <description>
         <p>

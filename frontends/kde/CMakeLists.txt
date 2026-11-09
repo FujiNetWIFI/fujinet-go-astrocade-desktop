@@ -27,6 +27,7 @@ set(KDE_SOURCES
   SettingsDialog.cpp
   help/HelpWindow.cpp
   debugger/DebuggerWindow.cpp
+  debugger/VideoTab.cpp
 )
 
 set(KDE_APP_ID online.fujinet.go.astrocade.kde)
@@ -73,6 +74,7 @@ endif()
 # platform, against a running session whose RAM holds a hand-assembled loop.
 if(Qt6Test_FOUND)
   add_executable(debugger_test debugger_test.cpp debugger/DebuggerWindow.cpp
+                 debugger/VideoTab.cpp
                  MainWindow.cpp DisplayWidget.cpp SoftDisplayWidget.cpp
                  FrameFeed.cpp SettingsDialog.cpp KeyForward.cpp
                  keypad/KeypadWindow.cpp help/HelpWindow.cpp)

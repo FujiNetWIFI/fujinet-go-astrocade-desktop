@@ -50,6 +50,44 @@ static pthread_mutex_t s_frame_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t s_frame[ASTRO_FB_WIDTH * ASTRO_FB_HEIGHT];
 static uint64_t s_frame_serial = 0;
 
+/* ---- once-a-frame capture for the debugger's Video tab ---- */
+static pthread_mutex_t s_cap_lock = PTHREAD_MUTEX_INITIALIZER;
+static astrovid_capture s_cap;
+static atomic_int s_cap_users;
+
+void astro_host_capture_enable(int on)
+{
+    if (on)
+        atomic_fetch_add(&s_cap_users, 1);
+    else if (atomic_load(&s_cap_users) > 0)
+        atomic_fetch_sub(&s_cap_users, 1);
+}
+
+static void capture_frame(const astro_machine_t *m)
+{
+    pthread_mutex_lock(&s_cap_lock);
+    astrovid_snapshot_from(m, &s_cap.snap);
+    memcpy(s_cap.lines, m->line_regs, sizeof s_cap.lines);
+    memcpy(s_cap.fb, m->fb, sizeof s_cap.fb);
+    s_cap.frame = m->frame;
+    s_cap.serial++;
+    pthread_mutex_unlock(&s_cap_lock);
+}
+
+int astro_host_capture_get(astrovid_capture *dst, uint64_t *serial_inout)
+{
+    int changed = 0;
+    pthread_mutex_lock(&s_cap_lock);
+    if (s_cap.serial != 0 && s_cap.serial != *serial_inout)
+    {
+        memcpy(dst, &s_cap, sizeof *dst);
+        *serial_inout = s_cap.serial;
+        changed = 1;
+    }
+    pthread_mutex_unlock(&s_cap_lock);
+    return changed;
+}
+
 static pthread_mutex_t s_cb_lock = PTHREAD_MUTEX_INITIALIZER;
 static astro_host_frame_cb s_frame_cb;
 static void *s_frame_cb_ctx;
@@ -379,6 +417,8 @@ static void *machine_thread(void *arg)
         for (int line = 0; line < ASTRO_LINES_PER_FRAME; line++)
             astro_machine_run_scanline(&s_machine);
 
+        if (atomic_load(&s_cap_users) > 0)
+            capture_frame(&s_machine);
         frame_publish(s_machine.fb);
         audio_publish(s_machine.snd.out, s_machine.snd.out_count);
         s_machine.snd.out_count = 0;

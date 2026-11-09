@@ -1,7 +1,7 @@
 /*
  * astrovid -- a consistent snapshot of the Astrocade data chip (video) and
- * the sound section, and renderers that turn it into pixels/text for the
- * debugger's Video tab.
+ * the sound section, and the types the Video tab controller (astrovidtab.h)
+ * draws from.
  *
  * EVERY programmer-visible register of the custom chip is exposed here, per
  * the Nutting manual's Output/Input Ports tables (pp. 106-107): the eight
@@ -63,41 +63,37 @@ typedef struct {
     uint32_t palette[512];      /* the built palette (for the strip) */
 } astrovid_snapshot;
 
+/* The video registers a screen line was drawn with. The machine records one
+ * per line as it renders it, so a game that changes colours, the boundary or
+ * VERBL mid-frame (from the INLIN interrupt, or timed to the beam) can be
+ * seen the way the TV showed it. */
+typedef struct {
+    uint8_t colors[8];          /* COL0R-3R, COL0L-3L */
+    uint8_t colorsplit, bgdata, vblank, mode;
+} astrovid_line;
+
+/* A finished frame as the machine left it: the registers at the frame's end,
+ * each line's own registers, and the picture. Taken once per frame by the
+ * machine thread (see astro_host_capture_*), so a reader sees one consistent
+ * frame while the game runs. */
+typedef struct {
+    astrovid_snapshot snap;
+    astrovid_line lines[240];   /* ASTROVID_SCREEN_H */
+    uint32_t fb[352 * 240];     /* XRGB8888, ASTROVID_SCREEN_W x _H */
+    uint64_t serial;            /* 0: nothing captured yet */
+    uint64_t frame;
+} astrovid_capture;
+
 /* Copy the whole chip state in one shot. Intended to be called while the
  * debugger holds the machine paused; a live call is racy but harmless (all
  * bytes). */
 void astrovid_snapshot_get(astrovid_snapshot *snap);
 
-/* ---- renderers ---- */
-
-/* Full screen (ASTROSESSION_FB geometry) rendered from the snapshot's screen
- * RAM + color registers, into XRGB8888 dst. w/h are written. */
-void astrovid_render_screen(const astrovid_snapshot *snap, uint32_t *dst,
-                            int *w, int *h);
-
-/* Screen RAM as a raw bitmap honouring the current mode (low-res 160x102 /
- * high-res 320x204), XRGB8888. w/h are written. */
-void astrovid_render_bitmap(const astrovid_snapshot *snap, uint32_t *dst,
-                            int *w, int *h);
-
-/* The 512-pen palette as a strip of cells, `cols` wide, each `cell` px square,
- * into XRGB8888 dst sized cols*cell x rows*cell. Returns rows. */
-int astrovid_render_palette(const astrovid_snapshot *snap, uint32_t *dst,
-                            int cols, int cell);
-
 /* Decoded register/state text (monospace), NUL-terminated. */
 void astrovid_format_state(const astrovid_snapshot *snap, char *dst, int len);
 
-/* Max buffer sizes a caller must allocate for the renders above (RGBA words).
- * A single shared scratch must be sized to the MAX of all of them -- the
- * sibling ports' Windows debugger corrupted .bss by sizing it to only one. */
 #define ASTROVID_SCREEN_W 352
 #define ASTROVID_SCREEN_H 240
-#define ASTROVID_BITMAP_W 320
-#define ASTROVID_BITMAP_H 204
-#define ASTROVID_PAL_COLS 32
-#define ASTROVID_PAL_CELL 12
-#define ASTROVID_MAX_PIXELS (ASTROVID_SCREEN_W * ASTROVID_SCREEN_H)
 
 #ifdef __cplusplus
 }
