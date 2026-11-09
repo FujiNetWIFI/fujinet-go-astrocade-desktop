@@ -5,15 +5,21 @@
  *
  * Tabs (ASTRO_DEBUGGER_TAB takes the number, or the start of the name):
  *   0 Console          the contract's command set, Tab completion, history
- *   1 CPU & Memory     the Z80 registers and flags, a memory dump with
- *                      go-to and poke
- *   2 Disassembly      breakpoint gutter, follow-PC, jump box, selectable row
- *   3 Video chip       the screen, the screen-RAM bitmap, the 512-pen
+ *   1 Disassembly      breakpoint gutter, follow-PC, jump box, selectable row
+ *   2 Memory           a dump with go-to (a range is highlighted), search
+ *                      (hex or text, next and previous) and poke
+ *   3 Breakpoints      why it stopped; execute, read/write watchpoints, port
+ *                      in/out, conditions
+ *   4 Watches          addresses, labels and ranges with their live values
+ *   5 Cart & I/O       the cartridge, the memory map, the ports and the chip
+ *   6 Trace            the instruction ring, live while the machine runs
+ *   7 History          the same ring, read when the machine stops
+ *   8 Video chip       the screen, the screen-RAM bitmap, the 512-pen
  *                      palette and the decoded data-chip registers
- *   4 Breakpoints      execute, read/write watchpoints, port in/out,
- *                      conditions
- *   5 Memory Map & I/O the bank map, the ports and the data chip
- *   6 FujiNet          every FujiBus packet, with the BoIP link, with hex
+ *   9 FujiNet          every FujiBus packet, with the BoIP link, with hex
+ * The registers (editable) and flags sit under the tabs on every tab. Any
+ * tab can be popped out into a window of its own (Pop Out, then Dock; closing
+ * that window docks it); one tab always stays in the main window.
  * A toolbar carries the stepping controls, symbol loading and file saves;
  * the family's keys apply (F5 run/stop, F7 step, F8 step over, Shift+F8 step
  * out, Shift+F7 frame, F9 breakpoint on the selected line, F12 close).
@@ -44,6 +50,7 @@
 #include "../window.h"
 #include "../help/help_window.h"
 #include "astrovid.h"
+#include "astromemtools.h"
 
 #define DISASM_WINDOW 48
 #define NREGS 17
@@ -51,6 +58,9 @@
 #define MEM_PAGE (MEM_ROWS * 16)
 #define POKE_MAX 64
 #define TRACE_MAX 512
+#define HIST_SHOWN 2000   /* lines on a Trace or History page */
+#define HIST_READ 65536   /* the ring */
+#define NTABS 10
 
 typedef struct {
     GtkWindow *win;
@@ -73,16 +83,27 @@ typedef struct {
     GPtrArray *history;
     guint history_pos;
 
-    /* cpu + memory */
+    /* the registers strip */
     GtkEntry *reg[NREGS];
-    GtkCheckButton *flag[6];  /* S Z H P/V N C */
+    GtkCheckButton *flag[8];  /* S Z Y H X P/V N C */
     GtkLabel *beam;
     gboolean updating_flags;
     gboolean force_entries;   /* a refresh may overwrite a focused entry */
+
+    /* memory */
     GtkTextView *mem_view;
     GtkEntry *mem_goto, *mem_write;
     int mem_base;
-    int mem_mark;             /* the address Go to found, marked; -1 none */
+    gboolean mem_hl;          /* a range is highlighted (Go to, a search hit, a watch) */
+    int mem_hl_lo, mem_hl_hi;
+    GtkDropDown *srch_kind;
+    GtkEntry *srch_entry;
+    GtkLabel *srch_note;
+
+    /* tabs: the page widget of each, and the window it is popped out into */
+    GtkWidget *pages[NTABS];
+    GtkWindow *detached[NTABS];
+    uint64_t seen_serial;     /* astrodebug_stop_serial last acted on */
 
     /* disassembly */
     GtkTextView *disasm;
@@ -105,10 +126,28 @@ typedef struct {
     GtkDropDown *bp_type;
     GtkEntry *bp_start, *bp_end, *bp_cond;
     GtkLabel *bp_msg;
+    GtkLabel *bp_stop;        /* "Stopped: ..." / "Running." */
     GString *bp_sig;          /* what the list shows, to skip a needless rebuild */
 
-    /* memory map & i/o */
-    GtkTextView *io_text;
+    /* watches */
+    GtkEntry *wt_entry;
+    GtkListBox *wt_list;
+    GPtrArray *wt_labels;     /* a GtkLabel per row, rewritten in place */
+    unsigned wt_gen;
+    gboolean wt_built;
+
+    /* cart & i/o */
+    GtkTextView *cart_text;
+
+    /* trace (0) and history (1): the same ring, two views */
+    GtkToggleButton *h_rec[2];
+    GtkDropDown *h_filter[2];
+    GtkEntry *h_range[2];
+    GtkLabel *h_note[2];
+    GtkTextView *h_text[2];
+    uint64_t h_sig[2];        /* what each page last drew; ~0 forces a redraw */
+    gboolean h_sync;          /* the Record toggles are being set from the engine */
+    int trace_ticks;
 
     /* fujinet */
     GtkLabel *fuji_note;
@@ -131,11 +170,12 @@ static const struct { const char *name; int reg; int digits; } k_regs[NREGS] = {
 #define REGS_FIRST_ROW 8
 
 /* The tabs, in order; ASTRO_DEBUGGER_TAB takes a number or the start of a name. */
-static const char *const k_tab_names[] = {
-    "Console", "CPU & Memory", "Disassembly", "Video chip", "Breakpoints", "Memory Map & I/O",
-    "FujiNet",
+static const char *const k_tab_names[NTABS] = {
+    "Console", "Disassembly", "Memory", "Breakpoints", "Watches", "Cart & I/O", "Trace",
+    "History", "Video chip", "FujiNet",
 };
-enum { TAB_CONSOLE, TAB_CPU, TAB_DISASM, TAB_VIDEO, TAB_BREAKS, TAB_IO, TAB_FUJINET };
+enum { TAB_CONSOLE, TAB_DISASM, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE,
+       TAB_HISTORY, TAB_VIDEO, TAB_FUJINET };
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -426,9 +466,9 @@ static void refresh_cpu(DbgWin *w)
         }
     }
     {
-        const int flags[6] = { c.sf, c.zf, c.hf, c.pf, c.nf, c.cf };
+        const int flags[8] = { c.sf, c.zf, c.yf, c.hf, c.xf, c.pf, c.nf, c.cf };
         w->updating_flags = TRUE;
-        for (i = 0; i < 6; i++)
+        for (i = 0; i < 8; i++)
             gtk_check_button_set_active(w->flag[i], flags[i] != 0);
         w->updating_flags = FALSE;
     }
@@ -437,6 +477,9 @@ static void refresh_cpu(DbgWin *w)
     gtk_label_set_text(w->beam, buf);
 }
 
+/* The dump: a row is "AAAA  " then 3 columns per byte, then the text. The
+ * highlighted range gets the accent background on its bytes (hex and text),
+ * with the gap between two highlighted bytes filled so it reads as a bar. */
 static void refresh_mem(DbgWin *w)
 {
     uint8_t data[MEM_PAGE];
@@ -461,13 +504,29 @@ static void refresh_mem(DbgWin *w)
     set_text(w->mem_view, str->str);
     g_string_free(str, TRUE);
 
-    /* the row Go to found stays marked across refreshes */
-    if (w->mem_mark >= w->mem_base && w->mem_mark < w->mem_base + MEM_PAGE) {
+    {   /* unchanged text keeps its tags: clear the old highlight first */
         GtkTextIter s, e;
-        int line = (w->mem_mark - w->mem_base) / 16 + 1;
-        gtk_text_buffer_get_iter_at_line(b, &s, line);
-        gtk_text_buffer_get_iter_at_line(b, &e, line + 1);
-        gtk_text_buffer_apply_tag_by_name(b, "mark", &s, &e);
+        gtk_text_buffer_get_bounds(b, &s, &e);
+        gtk_text_buffer_remove_tag_by_name(b, "mark", &s, &e);
+    }
+    if (w->mem_hl) {
+        int a;
+        for (a = w->mem_base; a < w->mem_base + MEM_PAGE; a++) {
+            GtkTextIter s, e;
+            int line, off;
+            gboolean next;
+            if (a < w->mem_hl_lo || a > w->mem_hl_hi) continue;
+            line = (a - w->mem_base) / 16 + 1;
+            col = (a - w->mem_base) % 16;
+            next = a < w->mem_hl_hi && col < 15;
+            gtk_text_buffer_get_iter_at_line_offset(b, &s, line, 6 + col * 3);
+            gtk_text_buffer_get_iter_at_line_offset(b, &e, line, 6 + col * 3 + (next ? 3 : 2));
+            gtk_text_buffer_apply_tag_by_name(b, "mark", &s, &e);
+            off = 6 + 48 + 1 + col;
+            gtk_text_buffer_get_iter_at_line_offset(b, &s, line, off);
+            gtk_text_buffer_get_iter_at_line_offset(b, &e, line, off + 1);
+            gtk_text_buffer_apply_tag_by_name(b, "mark", &s, &e);
+        }
     }
 }
 
@@ -596,11 +655,41 @@ static void refresh_video(DbgWin *w)
     set_text(w->vid_state, text);
 }
 
-static void refresh_io(DbgWin *w)
+/* The cartridge, then the memory map, then the ports and the data chip. */
+static void refresh_cart(DbgWin *w)
 {
-    static char text[8192];
-    astrodebug_io_state(w->dbg, text, sizeof text);
-    set_text(w->io_text, text);
+    static char io[8192];
+    astrodebug_cart cart;
+    astrodebug_region reg[32];
+    GString *t = g_string_new(NULL);
+    int n, i;
+
+    astrodebug_cart_info(w->dbg, &cart);
+    g_string_append(t, "Cartridge\n");
+    g_string_append_printf(t, "  File     %s\n", cart.path[0] ? cart.path : "(none)");
+    g_string_append_printf(t, "  Kind     %s\n", cart.kind[0] ? cart.kind : "none");
+    g_string_append_printf(t, "  Image    %u bytes, %u 4K page%s\n", (unsigned)cart.image_bytes,
+                           cart.pages, cart.pages == 1 ? "" : "s");
+    if (cart.bank[0] >= 0 || cart.bank[1] >= 0)
+        g_string_append_printf(t, "  Banks    low half page %d, high half page %d\n",
+                               cart.bank[0], cart.bank[1]);
+    else
+        g_string_append(t, "  Banks    none (not banked)\n");
+    g_string_append_printf(t, "  Mailbox  %s\n", cart.mailbox_live ? "live" : "dead");
+    g_string_append_printf(t, "  Staged   %s\n", cart.staged ? "yes" : "no");
+    g_string_append(t, "\nMemory map\n");
+    n = astrodebug_memory_map(w->dbg, reg, 32);
+    if (!n) g_string_append(t, "  (no map: no machine is loaded)\n");
+    for (i = 0; i < n; i++)
+        g_string_append_printf(t, "  %04X-%04X  %c%c  %s\n", reg[i].lo, reg[i].hi,
+                               reg[i].readable ? 'R' : '-', reg[i].writable ? 'W' : '-',
+                               reg[i].name);
+    io[0] = '\0';
+    astrodebug_io_state(w->dbg, io, sizeof io);
+    g_string_append(t, "\nI/O\n");
+    g_string_append(t, io);
+    set_text(w->cart_text, t->str);
+    g_string_free(t, TRUE);
 }
 
 /* The packet log is rebuilt only when it changed: a new packet, or a
@@ -652,25 +741,28 @@ static void refresh_fujinet(DbgWin *w, gboolean force)
 static void bp_enable_toggled(GtkCheckButton *b, gpointer ud);
 static void bp_remove_clicked(GtkButton *b, gpointer ud);
 
-static const char *bp_type_name(int type)
-{
-    if (type & ASTRODEBUG_BP_EXEC) return "Execute";
-    if ((type & (ASTRODEBUG_BP_READ | ASTRODEBUG_BP_WRITE)) == (ASTRODEBUG_BP_READ | ASTRODEBUG_BP_WRITE))
-        return "Read/Write";
-    if (type & ASTRODEBUG_BP_READ) return "Read";
-    if (type & ASTRODEBUG_BP_WRITE) return "Write";
-    if ((type & (ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT)) == (ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT))
-        return "In/Out";
-    if (type & ASTRODEBUG_BP_IN) return "Port In";
-    return "Port Out";
-}
-
 static void refresh_bps(DbgWin *w)
 {
     static astrodebug_breakpoint bps[128];
     GtkWidget *child;
     GString *sig = g_string_new(NULL);
     int n = astrodebug_breakpoint_list(w->dbg, bps, 128), i;
+
+    {
+        char reason[160], line[256];
+        int addr;
+        if (astrodebug_is_stopped(w->dbg)) {
+            astrodebug_stop_reason(w->dbg, reason, sizeof reason, &addr);
+            if (!reason[0] || strcmp(reason, "stopped") == 0)
+                g_strlcpy(line, "Stopped", sizeof line);
+            else
+                g_snprintf(line, sizeof line, "Stopped: %s", reason);
+            if (addr >= 0 && !strchr(reason, '$'))
+                g_snprintf(line + strlen(line), sizeof line - strlen(line), " at $%04X", addr);
+        } else
+            g_strlcpy(line, "Running.", sizeof line);
+        gtk_label_set_text(w->bp_stop, line);
+    }
 
     /* the list is rebuilt only when what it shows changed (hit counts move
      * while the machine runs), so a click on a row is not pulled out from
@@ -700,16 +792,9 @@ static void refresh_bps(DbgWin *w)
         GtkWidget *en = gtk_check_button_new();
         GtkWidget *rm = gtk_button_new_from_icon_name("user-trash-symbolic");
         GtkWidget *l;
-        char text[320], range[32];
-        const gboolean port = (bps[i].type & (ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT)) != 0;
-        if (bps[i].end != bps[i].start)
-            g_snprintf(range, sizeof range, port ? "$%02X-$%02X" : "$%04X-$%04X",
-                       bps[i].start, bps[i].end);
-        else
-            g_snprintf(range, sizeof range, port ? "$%02X" : "$%04X", bps[i].start);
-        g_snprintf(text, sizeof text, "#%-3d %-10s %-12s hits %-6u %s%s", bps[i].id,
-                   bp_type_name(bps[i].type), range, bps[i].hits,
-                   bps[i].condition[0] ? "if " : "", bps[i].condition);
+        char text[360], desc[256];
+        astrobp_describe(w->dbg, &bps[i], desc, sizeof desc);
+        g_snprintf(text, sizeof text, "#%-3d %s    hits %u", bps[i].id, desc, bps[i].hits);
         l = gtk_label_new(text);
         gtk_label_set_xalign(GTK_LABEL(l), 0);
         gtk_widget_set_hexpand(l, TRUE);
@@ -727,6 +812,230 @@ static void refresh_bps(DbgWin *w)
         gtk_box_append(GTK_BOX(row), rm);
         gtk_list_box_append(w->bp_list, row);
     }
+}
+
+/* ---- tabs, and tabs popped out into windows of their own -------------------- */
+
+static void refresh_now(DbgWin *w);
+static void show_in_memory(DbgWin *w, int lo, int hi);
+
+static int page_tab(GtkWidget *page)
+{
+    return GPOINTER_TO_INT(g_object_get_data(G_OBJECT(page), "tab"));
+}
+
+/* The tab showing in the main window (-1 if the notebook is empty). */
+static int current_tab(DbgWin *w)
+{
+    GtkWidget *page = gtk_notebook_get_nth_page(w->notebook,
+                                                gtk_notebook_get_current_page(w->notebook));
+    return page ? page_tab(page) : -1;
+}
+
+/* In front of the user: the current page, or a tab popped out. */
+static gboolean tab_visible(DbgWin *w, int tab)
+{
+    return w->detached[tab] != NULL || current_tab(w) == tab;
+}
+
+static void show_tab(DbgWin *w, int tab)
+{
+    if (w->detached[tab])
+        gtk_window_present(w->detached[tab]);
+    else
+        gtk_notebook_set_current_page(w->notebook,
+                                      gtk_notebook_page_num(w->notebook, w->pages[tab]));
+}
+
+/* ---- watches ------------------------------------------------------------------ */
+
+static void on_wt_remove(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    astrowatch_remove(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "wt-idx")));
+    refresh_now(w);
+}
+
+static void on_wt_memory(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    uint16_t lo, hi;
+    if (!astrowatch_range(w->dbg, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "wt-idx")),
+                          &lo, &hi)) {
+        toast(w, "That watch does not resolve to an address yet");
+        return;
+    }
+    show_in_memory(w, lo, hi);
+    show_tab(w, TAB_MEMORY);
+}
+
+/* Break when the watched bytes change: a write whose value differs from the
+ * byte it replaced. */
+static void break_on_change(DbgWin *w, uint16_t lo, uint16_t hi)
+{
+    char err[256] = "";
+    if (astrodebug_breakpoint_add(w->dbg, ASTRODEBUG_BP_WRITE, lo, hi, "value != old", err,
+                                  sizeof err) < 0) {
+        char *clean = clean_text(err[0] ? err : "The breakpoint was refused");
+        toast(w, clean);
+        g_free(clean);
+        return;
+    }
+    toast(w, "Breaking when it changes");
+}
+
+static void on_wt_break(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    uint16_t lo, hi;
+    if (!astrowatch_range(w->dbg, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "wt-idx")),
+                          &lo, &hi)) {
+        toast(w, "That watch does not resolve to an address yet");
+        return;
+    }
+    break_on_change(w, lo, hi);
+    refresh_now(w);
+}
+
+static void wt_rebuild(DbgWin *w)
+{
+    const int n = astrowatch_count();
+    int i;
+
+    gtk_list_box_remove_all(w->wt_list);
+    g_ptr_array_set_size(w->wt_labels, 0);
+    if (n == 0) {
+        GtkWidget *l = gtk_label_new("No watches. Type an address, a label, label+3, [ptr] "
+                                     "or a range (C000-C0FF) above.");
+        gtk_widget_add_css_class(l, "dim-label");
+        gtk_list_box_append(w->wt_list, l);
+    }
+    for (i = 0; i < n; i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *label = gtk_label_new(NULL);
+        static const struct { const char *text, *tip; GCallback cb; } btns[] = {
+            { "Memory", "Show it in the Memory tab", G_CALLBACK(on_wt_memory) },
+            { "Break on change", "Stop when a write changes it", G_CALLBACK(on_wt_break) },
+            { "Remove", "Forget this watch", G_CALLBACK(on_wt_remove) },
+        };
+        size_t k;
+        gtk_label_set_xalign(GTK_LABEL(label), 0);
+        gtk_widget_set_hexpand(label, TRUE);
+        gtk_widget_add_css_class(label, "monospace");
+        gtk_box_append(GTK_BOX(row), label);
+        for (k = 0; k < G_N_ELEMENTS(btns); k++) {
+            GtkWidget *b = gtk_button_new_with_label(btns[k].text);
+            gtk_widget_add_css_class(b, "flat");
+            gtk_widget_set_tooltip_text(b, btns[k].tip);
+            g_object_set_data(G_OBJECT(b), "wt-idx", GINT_TO_POINTER(i));
+            g_signal_connect(b, "clicked", btns[k].cb, w);
+            gtk_box_append(GTK_BOX(row), b);
+        }
+        gtk_list_box_append(w->wt_list, row);
+        g_ptr_array_add(w->wt_labels, label);
+    }
+}
+
+/* The rows are rebuilt only when the list changed; the values are written
+ * into the labels in place, so a click on a row's button is never pulled
+ * from under the pointer. */
+static void refresh_watches(DbgWin *w)
+{
+    const unsigned gen = astrowatch_generation();
+    int i;
+    if (!w->wt_built || gen != w->wt_gen || astrowatch_count() != (int)w->wt_labels->len) {
+        wt_rebuild(w);
+        w->wt_gen = gen;
+        w->wt_built = TRUE;
+    }
+    for (i = 0; i < (int)w->wt_labels->len; i++) {
+        char line[200];
+        astrowatch_format(w->dbg, i, line, sizeof line);
+        gtk_label_set_text(g_ptr_array_index(w->wt_labels, i), line);
+    }
+}
+
+static void on_wt_add(GtkWidget *wgt, gpointer ud)
+{
+    DbgWin *w = ud;
+    (void)wgt;
+    if (astrowatch_add(gtk_editable_get_text(GTK_EDITABLE(w->wt_entry))) < 0) {
+        toast(w, "Type an address, a label, an expression or a range");
+        return;
+    }
+    gtk_editable_set_text(GTK_EDITABLE(w->wt_entry), "");
+    refresh_now(w);
+}
+
+/* ---- trace and history -------------------------------------------------------- */
+
+/* Both tabs read the one ring. Trace (0) follows it while the machine runs;
+ * History (1) is read once the machine has stopped. The newest HIST_SHOWN
+ * matches are shown, oldest first. */
+static void refresh_hist(DbgWin *w, int idx, gboolean force)
+{
+    static astrodebug_trace buf[HIST_READ];
+    static int hit[HIST_SHOWN];
+    const gboolean on = astrodebug_trace_enabled(w->dbg) != 0;
+    const gboolean stopped = astrodebug_is_stopped(w->dbg) != 0;
+    const int count = astrodebug_trace_count(w->dbg);
+    uint16_t lo = 0, hi = 0xFFFF;
+    int filter = ASTRODEBUG_TRACE_ALL, n, i, shown = 0, matched = 0;
+    uint64_t sig;
+    astrodebug_trace newest;
+    char note[200];
+    GString *t;
+
+    w->h_sync = TRUE;       /* the Record toggles follow the engine */
+    gtk_toggle_button_set_active(w->h_rec[0], on);
+    gtk_toggle_button_set_active(w->h_rec[1], on);
+    w->h_sync = FALSE;
+
+    if (idx == 1 && !stopped) {
+        gtk_label_set_text(w->h_note[1], "Stop the machine to read its history.");
+        w->h_sig[1] = ~(uint64_t)0;
+        return;
+    }
+    memset(&newest, 0, sizeof newest);
+    astrodebug_trace_read(w->dbg, &newest, 1);
+    sig = ((uint64_t)count << 40) ^ newest.cycles ^ (on ? 1 : 0);
+    if (!force && sig == w->h_sig[idx]) return;
+
+    switch (gtk_drop_down_get_selected(w->h_filter[idx])) {
+    case 1: filter = ASTRODEBUG_TRACE_BRANCHES; break;
+    case 2:
+        if (!astrosym_parse_range(w->dbg, gtk_editable_get_text(GTK_EDITABLE(w->h_range[idx])),
+                                  &lo, &hi)) {
+            gtk_label_set_text(w->h_note[idx], "Type a range: C000-C0FF, a label, label..label");
+            return;
+        }
+        filter = ASTRODEBUG_TRACE_RANGE;
+        break;
+    default: break;
+    }
+    w->h_sig[idx] = sig;
+    n = astrodebug_trace_read(w->dbg, buf, filter == ASTRODEBUG_TRACE_ALL ? HIST_SHOWN : HIST_READ);
+    for (i = 0; i < n; i++)             /* newest first: take the newest matches */
+        if (astrodebug_trace_match(&buf[i], filter, lo, hi)) {
+            matched++;
+            if (shown < HIST_SHOWN) hit[shown++] = i;
+        }
+    t = g_string_new(NULL);
+    if (shown == 0)
+        g_string_append(t, on ? "(nothing recorded yet: let the machine run)"
+                              : "Recording is off. Press Record, then let the machine run.");
+    for (i = shown - 1; i >= 0; i--) {  /* oldest first */
+        char line[256];
+        astrodebug_trace_format(&buf[hit[i]], line, sizeof line);
+        g_string_append(t, line);
+        g_string_append_c(t, '\n');
+    }
+    set_text_at(w->h_text[idx], t->str, TRUE);
+    g_string_free(t, TRUE);
+    g_snprintf(note, sizeof note, "%s, %d instruction%s%s", on ? "recording" : "recording off",
+               count, count == 1 ? "" : "s",
+               matched > shown ? ", newest 2000 shown" : "");
+    gtk_label_set_text(w->h_note[idx], note);
 }
 
 static void refresh_status(DbgWin *w)
@@ -748,30 +1057,37 @@ static void refresh_status(DbgWin *w)
     else gtk_widget_remove_css_class(GTK_WIDGET(w->run_btn), "astro-accent");
 }
 
-/* Only the tab showing is brought up to date; the others catch up when
- * their tab is switched to. */
+/* Only the tabs in front of the user are brought up to date (the one showing,
+ * and any popped out); the others catch up when their tab is switched to. */
 static void refresh_tab(DbgWin *w, int tab)
 {
     if (w->closing) return;
     switch (tab) {
-    case TAB_CPU: refresh_cpu(w); refresh_mem(w); break;
     case TAB_DISASM: refresh_disasm(w); break;
-    case TAB_VIDEO: refresh_video(w); break;
+    case TAB_MEMORY: refresh_mem(w); break;
     case TAB_BREAKS: refresh_bps(w); break;
-    case TAB_IO: refresh_io(w); break;
+    case TAB_WATCHES: refresh_watches(w); break;
+    case TAB_CART: refresh_cart(w); break;
+    case TAB_TRACE: refresh_hist(w, 0, FALSE); break;
+    case TAB_HISTORY: refresh_hist(w, 1, FALSE); break;
+    case TAB_VIDEO: refresh_video(w); break;
     case TAB_FUJINET: refresh_fujinet(w, FALSE); break;
     default: break;
     }
 }
 
-/* The status and the tab showing, and the generation they now reflect. */
+/* The status, the registers and the tabs in front, and the generation they
+ * now reflect. */
 static void refresh_now(DbgWin *w)
 {
+    int t;
     if (w->closing) return;
     w->seen_generation = astrodebug_generation(w->dbg);
     w->was_stopped = astrodebug_is_stopped(w->dbg) != 0;
     refresh_status(w);
-    refresh_tab(w, gtk_notebook_get_current_page(w->notebook));
+    refresh_cpu(w);
+    for (t = 0; t < NTABS; t++)
+        if (tab_visible(w, t)) refresh_tab(w, t);
 }
 
 static void attach_and_refresh(DbgWin *w);
@@ -786,6 +1102,8 @@ static void install_css(void)
     gtk_css_provider_load_from_string(css,
         "button.astro-accent { background-image: none; background-color: #b5342c;"
         " color: #fff; }"
+        "button.astro-toggle:checked, togglebutton.astro-toggle:checked {"
+        " background-image: none; background-color: #b5342c; color: #fff; }"
         "label.astro-accent-text { color: #b5342c; }");
     gtk_style_context_add_provider_for_display(
         gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
@@ -805,6 +1123,23 @@ static gboolean tick_refresh(gpointer ud)
     }
     gen = astrodebug_generation(w->dbg);
     stopped = astrodebug_is_stopped(w->dbg) != 0;
+    {   /* a new stop brings the disassembly back to the PC, wherever it was scrolled */
+        const uint64_t serial = astrodebug_stop_serial(w->dbg);
+        if (serial != w->seen_serial) {
+            GtkAdjustment *adj = vadj(w->disasm);
+            w->seen_serial = serial;
+            if (adj) gtk_adjustment_set_value(adj, 0);
+            if (stopped && !gtk_check_button_get_active(w->follow_pc))
+                gtk_check_button_set_active(w->follow_pc, TRUE);
+            w->running_ticks = 0;
+            refresh_now(w);
+            return G_SOURCE_CONTINUE;
+        }
+    }
+    if (!stopped && tab_visible(w, TAB_TRACE) && ++w->trace_ticks >= 4) {
+        w->trace_ticks = 0;     /* the trace follows the ring while the machine runs */
+        refresh_hist(w, 0, FALSE);
+    }
     if (gen != w->seen_generation || stopped != w->was_stopped) {
         w->running_ticks = 0;
         refresh_now(w);
@@ -1006,15 +1341,16 @@ static void on_flag_toggled(GtkCheckButton *b, gpointer ud)
 {
     DbgWin *w = ud;
     int i = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "flag"));
-    static const int regs[6] = { ASTRO_FLAG_S, ASTRO_FLAG_Z, ASTRO_FLAG_H, ASTRO_FLAG_PV,
-                                 ASTRO_FLAG_N, ASTRO_FLAG_C };
+    static const int regs[8] = { ASTRO_FLAG_S, ASTRO_FLAG_Z, -1, ASTRO_FLAG_H, -1,
+                                 ASTRO_FLAG_PV, ASTRO_FLAG_N, ASTRO_FLAG_C };
     if (w->updating_flags) return;
     if (!astrodebug_is_stopped(w->dbg)) {
         toast(w, "Stop the machine to edit the registers");
         refresh_cpu(w);           /* put the box back */
         return;
     }
-    astrodebug_cpu_set(w->dbg, regs[i], gtk_check_button_get_active(b));
+    if (regs[i] >= 0)           /* Y and X are not separately settable */
+        astrodebug_cpu_set(w->dbg, regs[i], gtk_check_button_get_active(b));
     refresh_now(w);
 }
 
@@ -1056,18 +1392,66 @@ static void mem_set_base(DbgWin *w, int base)
     refresh_mem(w);
 }
 
-/* Go to: the page holding an address (or a label), with its row marked. */
+/* The page holding a range, the range highlighted (a little context above it). */
+static void show_in_memory(DbgWin *w, int lo, int hi)
+{
+    w->mem_hl = TRUE;
+    w->mem_hl_lo = lo;
+    w->mem_hl_hi = hi;
+    mem_set_base(w, (lo & ~0xF) - 4 * 16);
+}
+
+/* Go to: an address, a label, an expression or a range. */
 static void on_mem_goto(GtkEntry *entry, gpointer ud)
 {
     DbgWin *w = ud;
-    char err[128] = "";
-    long a;
-    if (!parse_addr(w, gtk_editable_get_text(GTK_EDITABLE(entry)), &a, err, sizeof err)) {
-        toast(w, err);
+    uint16_t lo, hi;
+    if (!astrosym_parse_range(w->dbg, gtk_editable_get_text(GTK_EDITABLE(entry)), &lo, &hi)) {
+        toast(w, "Not an address, a label or a range");
         return;
     }
-    w->mem_mark = (int)a;
-    mem_set_base(w, ((int)a & ~0xF) - 4 * 16);   /* a little context above it */
+    show_in_memory(w, lo, hi);
+}
+
+/* Find Next / Find Previous: from the highlight (else the top of the page). */
+static void on_search(GtkWidget *button, gpointer ud)
+{
+    DbgWin *w = ud;
+    const int backward = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "back"));
+    uint8_t pat[ASTROSEARCH_MAX], mask;
+    int n, flags, r;
+    uint16_t from, found;
+
+    if (!astrosearch_parse((int)gtk_drop_down_get_selected(w->srch_kind),
+                           gtk_editable_get_text(GTK_EDITABLE(w->srch_entry)),
+                           pat, &n, &mask, &flags)) {
+        gtk_label_set_text(w->srch_note, "Type hex bytes (3E 5A) or some text");
+        return;
+    }
+    if (!astrodebug_is_stopped(w->dbg)) {
+        gtk_label_set_text(w->srch_note, "Stop the machine first");
+        return;
+    }
+    if (w->mem_hl)
+        from = (uint16_t)w->mem_hl_lo;
+    else
+        from = backward ? (uint16_t)w->mem_base : (uint16_t)(w->mem_base - 1);
+    r = astrodebug_search_next(w->dbg, pat, n, mask, flags, from, backward, &found);
+    if (r > 0) {
+        char msg[64];
+        g_snprintf(msg, sizeof msg, "Found at $%04X", found);
+        show_in_memory(w, found, found + n - 1);
+        gtk_label_set_text(w->srch_note, msg);
+    } else if (r == 0) {
+        gtk_label_set_text(w->srch_note, "Not found");
+    } else {
+        gtk_label_set_text(w->srch_note, "Stop the machine first");
+    }
+}
+
+static void on_search_activate(GtkEntry *entry, gpointer ud)
+{
+    on_search(g_object_get_data(G_OBJECT(entry), "next-button"), ud);
 }
 
 static void on_mem_page(GtkButton *b, gpointer ud)
@@ -1199,6 +1583,14 @@ static void on_bp_clear(GtkButton *b, gpointer ud)
     refresh_now(w);
 }
 
+static void on_bp_clear_hits(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    (void)b;
+    astrodebug_breakpoint_clear_hits(w->dbg);
+    refresh_now(w);
+}
+
 static void popdown_of(GtkWidget *b)
 {
     GtkWidget *pop = gtk_widget_get_ancestor(b, GTK_TYPE_POPOVER);
@@ -1301,28 +1693,156 @@ static void on_fuji_clear(GtkButton *b, gpointer ud)
     refresh_fujinet(w, TRUE);
 }
 
+/* Help's contexts (astrohelp.h), one per tab */
+static const char *const k_tab_contexts[NTABS] = {
+    "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/breakpoints",
+    "debugger/watches", "debugger/cart", "debugger/trace", "debugger/history",
+    "debugger/video", "debugger/fujinet",
+};
+
 /* The notebook also switches pages as it is taken apart with the window
  * (main window closing), before the window's "destroy": only a mapped window
  * has a tab to refresh, a hidden one refreshes when it is shown. */
-/* Help's contexts (astrohelp.h), one per tab */
-static const char *const k_tab_contexts[] = {
-    "debugger/console", "debugger/cpu", "debugger/disassembly", "debugger/video",
-    "debugger/breakpoints", "debugger/io", "debugger/fujinet",
-};
-
 static void on_switch_page(GtkNotebook *nb, GtkWidget *page, guint num, gpointer ud)
 {
     DbgWin *w = ud;
-    (void)nb; (void)page;
-    if (num < G_N_ELEMENTS(k_tab_contexts))
-        astro_help_set_context(w->win, k_tab_contexts[num]);
-    if (!w->closing && gtk_widget_get_mapped(GTK_WIDGET(w->win)))
-        refresh_tab(w, (int)num);
+    (void)nb; (void)num;
+    if (w->closing) return;
+    astro_help_set_context(w->win, k_tab_contexts[page_tab(page)]);
+    if (gtk_widget_get_mapped(GTK_WIDGET(w->win)))
+        refresh_tab(w, page_tab(page));
+}
+
+/* Record on either page is the one recorder. */
+static void on_hist_rec(GtkToggleButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    if (w->h_sync) return;
+    astrodebug_trace_enable(w->dbg, gtk_toggle_button_get_active(b));
+    w->h_sig[0] = w->h_sig[1] = ~(uint64_t)0;
+    refresh_now(w);
+}
+
+static void on_hist_clear(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    (void)b;
+    astrodebug_trace_clear(w->dbg);
+    w->h_sig[0] = w->h_sig[1] = ~(uint64_t)0;
+    refresh_now(w);
+}
+
+static void on_hist_changed(GObject *o, GParamSpec *p, gpointer ud)
+{
+    DbgWin *w = ud;
+    (void)o; (void)p;
+    w->h_sig[0] = w->h_sig[1] = ~(uint64_t)0;
+    refresh_now(w);
+}
+
+static void on_hist_activate(GtkEntry *e, gpointer ud)
+{
+    on_hist_changed(NULL, NULL, ud);
+    (void)e;
+}
+
+static gboolean on_key(GtkEventControllerKey *c, guint keyval, guint code,
+                       GdkModifierType st, gpointer ud);
+
+/* Puts a popped-out tab back in the notebook, at its place in the order. */
+static void dock_tab(DbgWin *w, int tab, gboolean destroy)
+{
+    GtkWindow *win = w->detached[tab];
+    GtkWidget *page = w->pages[tab], *vbox;
+    int pos = 0, t;
+
+    if (!win) return;
+    vbox = g_object_get_data(G_OBJECT(win), "vbox");
+    g_object_ref(page);
+    gtk_box_remove(GTK_BOX(vbox), page);
+    w->detached[tab] = NULL;
+    for (t = 0; t < tab; t++)
+        if (!w->detached[t]) pos++;
+    gtk_notebook_insert_page(w->notebook, page, gtk_label_new(k_tab_names[tab]), pos);
+    g_object_unref(page);
+    gtk_notebook_set_current_page(w->notebook, pos);
+    if (destroy) gtk_window_destroy(win);
+    if (!w->closing) refresh_now(w);
+}
+
+static void on_dock_button(GtkButton *b, gpointer ud)
+{
+    dock_tab(ud, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "tab")), TRUE);
+}
+
+static gboolean on_detached_close(GtkWindow *win, gpointer ud)
+{
+    dock_tab(ud, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(win), "tab")), FALSE);
+    return FALSE;     /* let it close */
+}
+
+/* Any tab can move to a window of its own; one always stays. */
+static void pop_out_tab(DbgWin *w, int tab)
+{
+    GtkWidget *page, *vbox, *header, *dock;
+    GtkWindow *win;
+    GtkEventController *keys;
+    char title[96];
+
+    if (tab < 0 || tab >= NTABS || w->detached[tab]) return;
+    if (gtk_notebook_get_n_pages(w->notebook) <= 1) {
+        toast(w, "One tab always stays in the debugger");
+        return;
+    }
+    page = w->pages[tab];
+    g_object_ref(page);
+    gtk_notebook_remove_page(w->notebook, gtk_notebook_page_num(w->notebook, page));
+
+    win = GTK_WINDOW(adw_window_new());
+    g_snprintf(title, sizeof title, "Astrocade Debugger - %s", k_tab_names[tab]);
+    gtk_window_set_title(win, title);
+    gtk_window_set_icon_name(win, astro_icon_name());
+    gtk_window_set_default_size(win, 800, 560);
+    gtk_window_set_transient_for(win, w->win);
+    header = adw_header_bar_new();
+    dock = gtk_button_new_with_label("Dock");
+    gtk_widget_set_tooltip_text(dock, "Put this tab back in the debugger");
+    g_object_set_data(G_OBJECT(dock), "tab", GINT_TO_POINTER(tab));
+    g_signal_connect(dock, "clicked", G_CALLBACK(on_dock_button), w);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header), dock);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), astro_help_button(NULL));
+    vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_append(GTK_BOX(vbox), header);
+    gtk_box_append(GTK_BOX(vbox), page);
+    gtk_widget_set_vexpand(page, TRUE);
+    adw_window_set_content(ADW_WINDOW(win), vbox);
+    g_object_unref(page);
+    g_object_set_data(G_OBJECT(win), "vbox", vbox);
+    g_object_set_data(G_OBJECT(win), "tab", GINT_TO_POINTER(tab));
+    astro_help_set_context(win, k_tab_contexts[tab]);
+    keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), w);
+    gtk_widget_add_controller(GTK_WIDGET(win), keys);
+    g_signal_connect(win, "close-request", G_CALLBACK(on_detached_close), w);
+    w->detached[tab] = win;
+    gtk_window_present(win);
+    refresh_now(w);
+}
+
+static void on_pop_out(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    (void)b;
+    pop_out_tab(w, current_tab(w));
 }
 
 /* Closing hides: the machine runs on, and the window is back on F12. */
 static void hide_window(DbgWin *w)
 {
+    int t;
+    for (t = 0; t < NTABS; t++)
+        dock_tab(w, t, TRUE);       /* popped-out tabs go home with the window */
     astrodebug_detach(w->dbg);
     gtk_widget_set_visible(GTK_WIDGET(w->win), FALSE);
 }
@@ -1331,9 +1851,10 @@ static gboolean on_key(GtkEventControllerKey *c, guint keyval, guint code,
                        GdkModifierType st, gpointer ud)
 {
     DbgWin *w = ud;
-    (void)c; (void)code;
+    GtkWidget *src = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(c));
+    (void)code;
     switch (keyval) {
-    case GDK_KEY_F1: astro_help_for(w->win); return TRUE;
+    case GDK_KEY_F1: astro_help_for(GTK_IS_WINDOW(src) ? GTK_WINDOW(src) : w->win); return TRUE;
     case GDK_KEY_F5: on_run(NULL, w); return TRUE;
     case GDK_KEY_F7:
         if (st & GDK_SHIFT_MASK) on_frame(NULL, w); else on_step(NULL, w);
@@ -1412,6 +1933,13 @@ static GtkWidget *build_toolbar(DbgWin *w)
     gtk_popover_set_child(GTK_POPOVER(pop), popbox);
     gtk_menu_button_set_popover(GTK_MENU_BUTTON(save), pop);
     gtk_box_append(GTK_BOX(bar), save);
+
+    b = gtk_button_new_with_label("Pop Out");
+    gtk_widget_set_tooltip_text(b, "Move the tab showing into a window of its own");
+    gtk_widget_set_halign(b, GTK_ALIGN_END);
+    gtk_widget_set_hexpand(b, TRUE);
+    g_signal_connect(b, "clicked", G_CALLBACK(on_pop_out), w);
+    gtk_box_append(GTK_BOX(bar), b);
     return bar;
 }
 
@@ -1442,31 +1970,33 @@ static GtkWidget *build_console(DbgWin *w)
     return padded(box);
 }
 
-static GtkWidget *build_cpu(DbgWin *w)
+/* Under the notebook, on every tab: the registers (Enter sets one while the
+ * machine is stopped), the flags and the beam. */
+static GtkWidget *build_regs(DbgWin *w)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     GtkWidget *regs1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *regs2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *flags = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *mem = mono_view(&w->mem_view, FALSE);
-    GtkWidget *edit = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    GtkWidget *up, *down;
-    static const char *const fnames[6] = { "S", "Z", "H", "P/V", "N", "C" };
+    static const char *const fnames[8] = { "S", "Z", "Y", "H", "X", "P/V", "N", "C" };
     int i;
     for (i = 0; i < NREGS; i++) {
         w->reg[i] = GTK_ENTRY(gtk_entry_new());
         gtk_entry_set_max_length(w->reg[i], 6);
         gtk_editable_set_width_chars(GTK_EDITABLE(w->reg[i]), k_regs[i].digits + 1);
         gtk_editable_set_max_width_chars(GTK_EDITABLE(w->reg[i]), k_regs[i].digits + 1);
+        gtk_widget_add_css_class(GTK_WIDGET(w->reg[i]), "monospace");
         g_object_set_data(G_OBJECT(w->reg[i]), "reg", GINT_TO_POINTER(i));
         g_signal_connect(w->reg[i], "activate", G_CALLBACK(on_reg_activate), w);
         /* PC, SP and the main set on the first row; shadows and control on the second */
         gtk_box_append(GTK_BOX(i < REGS_FIRST_ROW ? regs1 : regs2),
                        labeled(k_regs[i].name, GTK_WIDGET(w->reg[i])));
     }
-    for (i = 0; i < 6; i++) {
+    for (i = 0; i < 8; i++) {
         w->flag[i] = GTK_CHECK_BUTTON(gtk_check_button_new_with_label(fnames[i]));
         g_object_set_data(G_OBJECT(w->flag[i]), "flag", GINT_TO_POINTER(i));
+        /* Y and X (bits 5 and 3 of F) are shown, set through AF */
+        if (i == 2 || i == 4) gtk_widget_set_sensitive(GTK_WIDGET(w->flag[i]), FALSE);
         g_signal_connect(w->flag[i], "toggled", G_CALLBACK(on_flag_toggled), w);
         gtk_box_append(GTK_BOX(flags), GTK_WIDGET(w->flag[i]));
     }
@@ -1475,10 +2005,54 @@ static GtkWidget *build_cpu(DbgWin *w)
     gtk_label_set_xalign(w->beam, 0);
     gtk_widget_set_hexpand(GTK_WIDGET(w->beam), TRUE);
     gtk_box_append(GTK_BOX(flags), GTK_WIDGET(w->beam));
+    gtk_box_append(GTK_BOX(box), regs1);
+    gtk_box_append(GTK_BOX(box), regs2);
+    gtk_box_append(GTK_BOX(box), flags);
+    return padded(box);
+}
+
+/* Find Next / Previous over the dump, with a note for what happened. */
+static GtkWidget *build_search_bar(DbgWin *w)
+{
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *next = gtk_button_new_with_label("Find Next");
+    GtkWidget *prev = gtk_button_new_with_label("Find Previous");
+    static const char *const kinds[] = { "Hex", "Text", NULL };
+
+    g_object_set_data(G_OBJECT(prev), "back", GINT_TO_POINTER(1));
+    g_signal_connect(next, "clicked", G_CALLBACK(on_search), w);
+    g_signal_connect(prev, "clicked", G_CALLBACK(on_search), w);
+    w->srch_kind = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(kinds));
+    gtk_widget_set_tooltip_text(GTK_WIDGET(w->srch_kind), "Hex bytes (3E 5A) or text (one byte per character)");
+    w->srch_entry = GTK_ENTRY(gtk_entry_new());
+    gtk_entry_set_placeholder_text(w->srch_entry, "search the 64K: 3E 5A, or text");
+    gtk_widget_set_hexpand(GTK_WIDGET(w->srch_entry), TRUE);
+    g_object_set_data(G_OBJECT(w->srch_entry), "next-button", next);
+    g_signal_connect(w->srch_entry, "activate", G_CALLBACK(on_search_activate), w);
+    w->srch_note = GTK_LABEL(gtk_label_new(""));
+    gtk_widget_add_css_class(GTK_WIDGET(w->srch_note), "dim-label");
+    gtk_label_set_ellipsize(w->srch_note, PANGO_ELLIPSIZE_END);
+    gtk_label_set_width_chars(w->srch_note, 18);
+    gtk_label_set_max_width_chars(w->srch_note, 18);
+    gtk_box_append(GTK_BOX(bar), gtk_label_new("Search"));
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->srch_kind));
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->srch_entry));
+    gtk_box_append(GTK_BOX(bar), next);
+    gtk_box_append(GTK_BOX(bar), prev);
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->srch_note));
+    return bar;
+}
+
+static GtkWidget *build_memory(DbgWin *w)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    GtkWidget *mem = mono_view(&w->mem_view, FALSE);
+    GtkWidget *edit = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *up, *down;
 
     w->mem_goto = GTK_ENTRY(gtk_entry_new());
-    gtk_editable_set_width_chars(GTK_EDITABLE(w->mem_goto), 12);
-    gtk_entry_set_placeholder_text(w->mem_goto, "$C000 / label");
+    gtk_editable_set_width_chars(GTK_EDITABLE(w->mem_goto), 16);
+    gtk_entry_set_placeholder_text(w->mem_goto, "$C000 / label / lo-hi");
     g_signal_connect(w->mem_goto, "activate", G_CALLBACK(on_mem_goto), w);
     w->mem_write = GTK_ENTRY(gtk_entry_new());
     gtk_editable_set_width_chars(GTK_EDITABLE(w->mem_write), 14);
@@ -1495,13 +2069,13 @@ static GtkWidget *build_cpu(DbgWin *w)
     gtk_box_append(GTK_BOX(edit), down);
     gtk_box_append(GTK_BOX(edit), labeled("Poke (address bytes)", GTK_WIDGET(w->mem_write)));
 
-    gtk_box_append(GTK_BOX(box), regs1);
-    gtk_box_append(GTK_BOX(box), regs2);
-    gtk_box_append(GTK_BOX(box), flags);
     gtk_box_append(GTK_BOX(box), edit);
+    gtk_box_append(GTK_BOX(box), build_search_bar(w));
     gtk_box_append(GTK_BOX(box), mem);
-    accent_tag(w->mem_view, "mark");
-    w->mem_mark = -1;
+    /* the highlight covers a few bytes, not a paragraph */
+    gtk_text_buffer_create_tag(gtk_text_view_get_buffer(w->mem_view), "mark",
+                               "background", "#b5342c", "foreground", "#ffffff", NULL);
+    w->mem_hl = FALSE;
     return padded(box);
 }
 
@@ -1590,7 +2164,7 @@ static GtkWidget *build_breaks(DbgWin *w)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *scroll = gtk_scrolled_window_new();
-    GtkWidget *add, *clear, *hint;
+    GtkWidget *add, *clear, *hits, *head, *hint;
     static const char *const types[] = { "Execute", "Read", "Write", "Read/Write", "Port In",
                                          "Port Out", "Port In/Out", NULL };
 
@@ -1633,6 +2207,18 @@ static GtkWidget *build_breaks(DbgWin *w)
     gtk_label_set_xalign(GTK_LABEL(hint), 0);
     gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
 
+    w->bp_stop = GTK_LABEL(gtk_label_new(""));
+    gtk_label_set_xalign(w->bp_stop, 0);
+    gtk_widget_set_hexpand(GTK_WIDGET(w->bp_stop), TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(w->bp_stop), "heading");
+    hits = gtk_button_new_with_label("Clear Hits");
+    gtk_widget_set_tooltip_text(hits, "Zero every hit count");
+    g_signal_connect(hits, "clicked", G_CALLBACK(on_bp_clear_hits), w);
+    head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(head), GTK_WIDGET(w->bp_stop));
+    gtk_box_append(GTK_BOX(head), hits);
+
+    gtk_box_append(GTK_BOX(box), head);
     gtk_box_append(GTK_BOX(box), scroll);
     gtk_box_append(GTK_BOX(box), row);
     gtk_box_append(GTK_BOX(box), GTK_WIDGET(w->bp_msg));
@@ -1640,9 +2226,73 @@ static GtkWidget *build_breaks(DbgWin *w)
     return padded(box);
 }
 
-static GtkWidget *build_io(DbgWin *w)
+static GtkWidget *build_watches(DbgWin *w)
 {
-    return padded(mono_view(&w->io_text, FALSE));
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    GtkWidget *form = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *add;
+
+    w->wt_labels = g_ptr_array_new();
+    w->wt_entry = GTK_ENTRY(gtk_entry_new());
+    gtk_entry_set_placeholder_text(w->wt_entry, "address, label, label+3, [ptr], C000-C0FF");
+    gtk_widget_set_hexpand(GTK_WIDGET(w->wt_entry), TRUE);
+    g_signal_connect(w->wt_entry, "activate", G_CALLBACK(on_wt_add), w);
+    add = gtk_button_new_with_label("Add");
+    g_signal_connect(add, "clicked", G_CALLBACK(on_wt_add), w);
+    gtk_box_append(GTK_BOX(form), gtk_label_new("Watch"));
+    gtk_box_append(GTK_BOX(form), GTK_WIDGET(w->wt_entry));
+    gtk_box_append(GTK_BOX(form), add);
+
+    w->wt_list = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(w->wt_list, GTK_SELECTION_NONE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(w->wt_list));
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_box_append(GTK_BOX(box), form);
+    gtk_box_append(GTK_BOX(box), scroll);
+    return padded(box);
+}
+
+static GtkWidget *build_cart(DbgWin *w)
+{
+    return padded(mono_view(&w->cart_text, FALSE));
+}
+
+/* Trace (idx 0) and History (idx 1): the same controls over the one ring. */
+static GtkWidget *build_hist(DbgWin *w, int idx)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *scroll = mono_view(&w->h_text[idx], FALSE);
+    GtkWidget *clear = gtk_button_new_with_label("Clear");
+    static const char *const filters[] = { "All instructions", "Branches only", "In range", NULL };
+
+    w->h_rec[idx] = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("Record"));
+    gtk_widget_add_css_class(GTK_WIDGET(w->h_rec[idx]), "astro-toggle");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(w->h_rec[idx]),
+                                "Record every instruction the CPU runs (the machine runs slower)");
+    g_signal_connect(w->h_rec[idx], "toggled", G_CALLBACK(on_hist_rec), w);
+    w->h_filter[idx] = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(filters));
+    g_signal_connect(w->h_filter[idx], "notify::selected", G_CALLBACK(on_hist_changed), w);
+    w->h_range[idx] = GTK_ENTRY(gtk_entry_new());
+    gtk_entry_set_placeholder_text(w->h_range[idx], "range: C000-C0FF or a label");
+    g_signal_connect(w->h_range[idx], "activate", G_CALLBACK(on_hist_activate), w);
+    g_signal_connect(clear, "clicked", G_CALLBACK(on_hist_clear), w);
+    w->h_note[idx] = GTK_LABEL(gtk_label_new(""));
+    gtk_widget_add_css_class(GTK_WIDGET(w->h_note[idx]), "dim-label");
+    gtk_widget_set_hexpand(GTK_WIDGET(w->h_note[idx]), TRUE);
+    gtk_label_set_xalign(w->h_note[idx], 1.0f);
+    make_log(w->h_text[idx]);
+    w->h_sig[idx] = ~(uint64_t)0;
+
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->h_rec[idx]));
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->h_filter[idx]));
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->h_range[idx]));
+    gtk_box_append(GTK_BOX(bar), clear);
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->h_note[idx]));
+    gtk_box_append(GTK_BOX(box), bar);
+    gtk_box_append(GTK_BOX(box), scroll);
+    return padded(box);
 }
 
 /* The packets left (a note and Clear over them), the BoIP link and its
@@ -1689,6 +2339,7 @@ static void on_win_finalized(gpointer data, GObject *where)
     (void)where;
     if (w->history) g_ptr_array_unref(w->history);
     if (w->bp_sig) g_string_free(w->bp_sig, TRUE);
+    if (w->wt_labels) g_ptr_array_unref(w->wt_labels);
     g_free(w);
 }
 
@@ -1712,10 +2363,11 @@ static void attach_and_refresh(DbgWin *w)
     refresh_now(w);
 }
 
-/* ASTRO_DEBUGGER_TAB: a page number (0-6), or a tab's name (or the start of one). */
-static int tab_from_env(void)
+/* A tab from an environment variable (ASTRO_DEBUGGER_TAB, ASTRO_POPOUT): a
+ * number (0-9), or a tab's name or the start of one, any case. */
+static int tab_from_env(const char *var)
 {
-    const char *tab = g_getenv("ASTRO_DEBUGGER_TAB");
+    const char *tab = g_getenv(var);
     char *end;
     long n;
     unsigned i;
@@ -1726,6 +2378,8 @@ static int tab_from_env(void)
     for (i = 0; i < G_N_ELEMENTS(k_tab_names); i++)
         if (g_ascii_strncasecmp(tab, k_tab_names[i], strlen(tab)) == 0)
             return (int)i;
+    if (g_ascii_strncasecmp(tab, "io", 2) == 0 || g_ascii_strncasecmp(tab, "i/o", 3) == 0)
+        return TAB_CART;
     return -1;
 }
 
@@ -1734,7 +2388,7 @@ void astro_debugger_show(GtkWindow *parent, astrosession *session)
     DbgWin *w;
     GtkWidget *toolbar, *header, *root, *notebook, *overlay;
     GtkEventController *keys;
-    int tab;
+    int tab, i;
 
     if (g_win) {
         gboolean shown = gtk_widget_get_visible(GTK_WIDGET(g_win->win));
@@ -1746,7 +2400,6 @@ void astro_debugger_show(GtkWindow *parent, astrosession *session)
     w = g_new0(DbgWin, 1);
     w->session = session;
     w->dbg = astrosession_debugger(session);
-    w->mem_mark = -1;
     g_win = w;
 
     w->win = GTK_WINDOW(adw_window_new());
@@ -1764,21 +2417,26 @@ void astro_debugger_show(GtkWindow *parent, astrosession *session)
     notebook = gtk_notebook_new();
     w->notebook = GTK_NOTEBOOK(notebook);
     gtk_widget_set_vexpand(notebook, TRUE);
-    gtk_notebook_append_page(w->notebook, build_console(w), gtk_label_new(k_tab_names[TAB_CONSOLE]));
-    gtk_notebook_append_page(w->notebook, build_cpu(w), gtk_label_new(k_tab_names[TAB_CPU]));
-    gtk_notebook_append_page(w->notebook, build_disasm(w), gtk_label_new(k_tab_names[TAB_DISASM]));
-    gtk_notebook_append_page(w->notebook, build_video(w), gtk_label_new(k_tab_names[TAB_VIDEO]));
-    gtk_notebook_append_page(w->notebook, build_breaks(w), gtk_label_new(k_tab_names[TAB_BREAKS]));
-    gtk_notebook_append_page(w->notebook, build_io(w), gtk_label_new(k_tab_names[TAB_IO]));
-    gtk_notebook_append_page(w->notebook, build_fujinet(w), gtk_label_new(k_tab_names[TAB_FUJINET]));
+    w->pages[TAB_CONSOLE] = build_console(w);
+    w->pages[TAB_DISASM] = build_disasm(w);
+    w->pages[TAB_MEMORY] = build_memory(w);
+    w->pages[TAB_BREAKS] = build_breaks(w);
+    w->pages[TAB_WATCHES] = build_watches(w);
+    w->pages[TAB_CART] = build_cart(w);
+    w->pages[TAB_TRACE] = build_hist(w, 0);
+    w->pages[TAB_HISTORY] = build_hist(w, 1);
+    w->pages[TAB_VIDEO] = build_video(w);
+    w->pages[TAB_FUJINET] = build_fujinet(w);
+    for (i = 0; i < NTABS; i++) {
+        g_object_set_data(G_OBJECT(w->pages[i]), "tab", GINT_TO_POINTER(i));
+        gtk_notebook_append_page(w->notebook, w->pages[i], gtk_label_new(k_tab_names[i]));
+    }
     gtk_box_append(GTK_BOX(root), notebook);
-    tab = tab_from_env();
+    gtk_box_append(GTK_BOX(root), build_regs(w));
+    tab = tab_from_env("ASTRO_DEBUGGER_TAB");
     if (tab >= 0) gtk_notebook_set_current_page(w->notebook, tab);
     g_signal_connect(notebook, "switch-page", G_CALLBACK(on_switch_page), w);
-    {
-        int cur = gtk_notebook_get_current_page(w->notebook);
-        astro_help_set_context(w->win, k_tab_contexts[cur > 0 && cur < 7 ? cur : 0]);
-    }
+    astro_help_set_context(w->win, k_tab_contexts[current_tab(w)]);
 
     overlay = adw_toast_overlay_new();
     w->toasts = ADW_TOAST_OVERLAY(overlay);
@@ -1799,12 +2457,24 @@ void astro_debugger_show(GtkWindow *parent, astrosession *session)
     g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), w);
     gtk_widget_add_controller(GTK_WIDGET(w->win), keys);
 
+    /* captures: a watch, a break-on-change, a Go to, recording, a popped-out tab */
+    {
+        const char *wt = g_getenv("ASTRO_WATCH"), *wb = g_getenv("ASTRO_WATCH_BREAK"),
+                   *mg = g_getenv("ASTRO_MEM_GOTO");
+        uint16_t lo, hi;
+        if (wt && *wt) astrowatch_add(wt);
+        if (wb && *wb && astrosym_parse_range(w->dbg, wb, &lo, &hi)) break_on_change(w, lo, hi);
+        if (mg && *mg && astrosym_parse_range(w->dbg, mg, &lo, &hi)) show_in_memory(w, lo, hi);
+        if (g_getenv("ASTRO_HISTORY")) astrodebug_trace_enable(w->dbg, 1);
+    }
     attach_and_refresh(w);
     g_signal_connect(w->win, "map", G_CALLBACK(on_win_map), w);
     g_signal_connect(w->win, "unmap", G_CALLBACK(on_win_unmap), w);
     gtk_window_present(w->win);
-    if (gtk_notebook_get_current_page(w->notebook) == TAB_CONSOLE)
+    if (current_tab(w) == TAB_CONSOLE)
         gtk_widget_grab_focus(GTK_WIDGET(w->console_in));
+    tab = tab_from_env("ASTRO_POPOUT");
+    if (tab >= 0) pop_out_tab(w, tab);
 }
 
 /* F12 and the menu item: show it, or hide it if it is showing. */

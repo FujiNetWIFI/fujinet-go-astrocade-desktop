@@ -47,6 +47,13 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.9.0" date="2026-11-09">
+      <description>
+        <p>
+          Debugger: ten tabs, with the registers in a strip under all of them. New Watches tab (addresses, labels, ranges; Break on Change), memory search for hex or text, Go To that takes ranges and highlights them, a Cart &amp; I/O tab with the cartridge's image, banks and memory map, Trace and History tabs that record every instruction (with branch and range filters), and Pop Out, which moves any tab into a window of its own. Breakpoint conditions can use old, the byte a write replaced; the Breakpoints tab says why the machine stopped and can clear hit counts; every stop brings the disassembly back to the PC.
+        </p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-11-08">
       <description>
         <p>

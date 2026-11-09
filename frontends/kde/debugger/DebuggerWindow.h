@@ -54,11 +54,15 @@ private:
     ~DebuggerWindow() override;
     QWidget *buildToolbar();
     QWidget *buildConsole();
-    QWidget *buildCpu();
+    QWidget *buildRegs();
     QWidget *buildDisasm();
+    QWidget *buildMemory();
+    QWidget *buildSearchBar();
     QWidget *buildVideo();
     QWidget *buildBreaks();
-    QWidget *buildIo();
+    QWidget *buildWatches();
+    QWidget *buildCart();
+    QWidget *buildHist(int idx);
     QWidget *buildFujinet();
 
     void refreshStatus();
@@ -67,7 +71,9 @@ private:
     void refreshDisasm();
     void refreshVideo();
     void refreshBps();
-    void refreshIo();
+    void refreshWatches(bool force);
+    void refreshCart();
+    void refreshHist(int idx, bool force);
     void refreshFujinet(bool force);
     void refreshPage(int page, bool live);
     void refreshAll();
@@ -91,6 +97,14 @@ private:
     void setReg(int i);
     void setFlag(int id, bool on);
     void memGoto();
+    void memSearch(bool backward);
+    void showInMemory(uint16_t lo, uint16_t hi);
+    void popOut(int tab);
+    void dock(int tab);
+    int currentTab() const;
+    bool tabVisible(int tab) const;
+    void addWatch();
+    void watchBreak(int index);
     void memWrite();
     void jumpTo();
     void loadSymbols(bool fromFile);
@@ -118,21 +132,27 @@ private:
     QStringList m_history;
     int m_historyPos = 0;
 
-    /* cpu + memory */
+    /* registers strip */
     QLineEdit *m_reg[15] = {};
     QCheckBox *m_flag[6] = {};
+    QCheckBox *m_flagRo[2] = {};        /* Y and X: bits of F with no setter */
     QCheckBox *m_iff[2] = {};
     QLabel *m_beam = nullptr;
     QPlainTextEdit *m_mem = nullptr;
     QLineEdit *m_memGoto = nullptr, *m_memAddr = nullptr, *m_memVal = nullptr;
     int m_memTop = 0;
-    int m_memMark = -1;                 /* the address Go to found; -1 none */
+    bool m_hl = false;                  /* a range is highlighted in the dump */
+    uint16_t m_hlLo = 0, m_hlHi = 0;
+    QComboBox *m_srchKind = nullptr;
+    QLineEdit *m_srchEntry = nullptr;
+    QLabel *m_srchNote = nullptr;
 
     /* disassembly */
     QPlainTextEdit *m_disasm = nullptr;
     QCheckBox *m_followPc = nullptr;
     QLineEdit *m_jump = nullptr;
     uint16_t m_disasmTop = 0;
+    uint64_t m_seenSerial = 0;          /* astrodebug_stop_serial last followed */
     int m_selected = -1;                /* the selected line's address, or -1 */
     int m_wheel = 0;                    /* wheel travel not yet a row */
     std::vector<uint16_t> m_lineAddr;
@@ -151,8 +171,30 @@ private:
     QComboBox *m_bpType = nullptr;
     QLineEdit *m_bpStart = nullptr, *m_bpEnd = nullptr, *m_bpCond = nullptr;
 
-    /* memory map and I/O */
+    QLabel *m_bpStop = nullptr;
+
+    /* watches */
+    QLineEdit *m_wtEntry = nullptr;
+    QTableWidget *m_wtTable = nullptr;
+    unsigned m_wtGen = ~0u;
+    QString m_wtSig;
+
+    /* cart and I/O */
     QPlainTextEdit *m_io = nullptr;
+
+    /* trace (0, live) and history (1, on a stop) share the engine's ring */
+    QPushButton *m_hRec[2] = {};
+    QComboBox *m_hFilter[2] = {};
+    QLineEdit *m_hRange[2] = {};
+    QPlainTextEdit *m_hText[2] = {};
+    QLabel *m_hNote[2] = {};
+    int m_hSeen[2] = { -1, -1 };
+    bool m_hSync = false;
+
+    /* tabs peeled off into windows of their own */
+    QWidget *m_pages[16] = {};
+    QWidget *m_popped[16] = {};
+    bool m_closing = false;
 
     /* fujinet */
     QLabel *m_fujiNote = nullptr;

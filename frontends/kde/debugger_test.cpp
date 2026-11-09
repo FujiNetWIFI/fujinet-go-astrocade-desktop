@@ -38,6 +38,7 @@
 #include <QToolButton>
 
 #include "astrodebug.h"
+#include "astromemtools.h"
 #include "astrosession.h"
 #include "DisplayWidget.h"
 #include "MainWindow.h"
@@ -148,7 +149,7 @@ class DebuggerTest : public QObject {
             if (c->text() == text) return c;
         return nullptr;
     }
-    QTableWidget *bpTable() { return m_win->findChild<QTableWidget *>(); }
+    QTableWidget *bpTable() { return m_tabs->widget(3)->findChild<QTableWidget *>(); }
 
     void waitStopped()
     {
@@ -220,7 +221,7 @@ private slots:
         QCOMPARE(astrosession_start(m_s, &m_opts), 0);
 
         /* the window opens on the tab ASTRO_DEBUGGER_TAB names */
-        qputenv("ASTRO_DEBUGGER_TAB", "memmap");
+        qputenv("ASTRO_DEBUGGER_TAB", "i/o");
         DebuggerWindow::showFor(nullptr, m_s);
         qunsetenv("ASTRO_DEBUGGER_TAB");
         for (QWidget *w : QApplication::topLevelWidgets())
@@ -257,10 +258,11 @@ private slots:
     {
         QStringList names;
         for (int i = 0; i < m_tabs->count(); ++i) names << m_tabs->tabText(i);
-        QCOMPARE(names, (QStringList{ QStringLiteral("Console"), QStringLiteral("CPU && Memory"),
-                                      QStringLiteral("Disassembly"), QStringLiteral("Video chip"),
-                                      QStringLiteral("Breakpoints"), QStringLiteral("Memory Map && I/O"),
-                                      QStringLiteral("FujiNet") }));
+        QCOMPARE(names, (QStringList{ QStringLiteral("Console"), QStringLiteral("Disassembly"),
+                                      QStringLiteral("Memory"), QStringLiteral("Breakpoints"),
+                                      QStringLiteral("Watches"), QStringLiteral("Cart && I/O"),
+                                      QStringLiteral("Trace"), QStringLiteral("History"),
+                                      QStringLiteral("Video chip"), QStringLiteral("FujiNet") }));
         QVERIFY(astrodebug_is_attached(m_d));
         QVERIFY(astrodebug_is_stopped(m_d));
         /* Run is the accent while stopped, whichever text it wears, in one size */
@@ -389,7 +391,7 @@ private slots:
 
     void disassemblyHighlights()
     {
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(1);
         QPlainTextEdit *v = disasmView();
         QVERIFY(v);
         QTRY_VERIFY_WITH_TIMEOUT(lineOf(v, 0x8007) >= 0, 2000);
@@ -432,7 +434,7 @@ private slots:
 
     void clickSelectsAndGutterToggles()
     {
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(1);
         QPlainTextEdit *v = disasmView();
         QTRY_VERIFY_WITH_TIMEOUT(lineOf(v, 0x800C) >= 0, 2000);
         /* nothing selected: Run to Cursor and F9 say so */
@@ -472,7 +474,7 @@ private slots:
 
     void runToCursor()
     {
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(1);
         QPlainTextEdit *v = disasmView();
         QTRY_VERIFY_WITH_TIMEOUT(lineOf(v, 0x800F) >= 0, 2000);
         clickLine(0x800F, 30);
@@ -485,7 +487,7 @@ private slots:
 
     void wheelJumpAndFollow()
     {
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(1);
         QPlainTextEdit *v = disasmView();
         QCheckBox *follow = check(QStringLiteral("Follow PC"));
         QVERIFY(follow && follow->isChecked());
@@ -518,15 +520,15 @@ private slots:
 
     void registersFlagsMemory()
     {
-        m_tabs->setCurrentIndex(1);
+        m_tabs->setCurrentIndex(2);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         QList<QLineEdit *> regs;
-        for (QLineEdit *e : m_tabs->currentWidget()->findChildren<QLineEdit *>())
+        for (QLineEdit *e : m_win->findChildren<QLineEdit *>())
             if (e->toolTip().startsWith(QLatin1String("Enter sets it"))) regs << e;
-        QCOMPARE(regs.size(), 15);                  /* AF..HL', I, R, IM; IFF1/2 are the boxes */
-        QTRY_COMPARE_WITH_TIMEOUT(regs[7]->text(), QStringLiteral("8007"), 2000);   /* PC */
+        QCOMPARE(regs.size(), 15);                  /* PC..IY, AF'..HL', I, R, IM; IFF1/2 are the boxes */
+        QTRY_COMPARE_WITH_TIMEOUT(regs[0]->text(), QStringLiteral("8007"), 2000);   /* PC */
         QCOMPARE(regs[14]->text(), QString::number(imOf(m_d)));
-        typeInto(regs[7], QStringLiteral("800C"));
+        typeInto(regs[0], QStringLiteral("800C"));
         QTRY_COMPARE_WITH_TIMEOUT(pcOf(m_d), 0x800C, 2000);
         typeInto(regs[8], QStringLiteral("1234"));  /* AF' */
         astrodebug_cpu c;
@@ -548,7 +550,7 @@ private slots:
         astrodebug_cpu_set(m_d, ASTRO_FLAG_C, 0);
         /* the beam / cycles line */
         bool beam = false;
-        for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
+        for (QLabel *l : m_win->findChildren<QLabel *>())
             if (l->text().startsWith(QLatin1String("scanline"))) beam = l->text().contains(QLatin1String("T-states"));
         QVERIFY(beam);
         /* memory: write through the map, go to a label or an address */
@@ -570,7 +572,7 @@ private slots:
         astrodebug_read(m_d, 0x8112, &b, 1);
         QCOMPARE((int)b, 0x11);
         QVERIFY(m_win->statusBar()->currentMessage().contains(QLatin1String("byte")));
-        QLineEdit *go = entryIs(QStringLiteral("$C000 or label"));
+        QLineEdit *go = entryIs(QStringLiteral("$C000, label or lo-hi"));
         QVERIFY(go);
         typeInto(go, QStringLiteral("8000"));
         QPlainTextEdit *mem = nullptr;
@@ -587,7 +589,7 @@ private slots:
         /* edits need a stopped machine */
         QTest::keyClick(m_win, Qt::Key_F5);
         QTRY_VERIFY_WITH_TIMEOUT(!astrodebug_is_stopped(m_d), 2000);
-        typeInto(regs[7], QStringLiteral("8000"));
+        typeInto(regs[0], QStringLiteral("8000"));
         QVERIFY(m_win->statusBar()->currentMessage().contains(QLatin1String("Stop the machine")));
         QTest::keyClick(m_win, Qt::Key_F5);
         waitStopped();
@@ -596,7 +598,7 @@ private slots:
 
     void breakpointsTab()
     {
-        m_tabs->setCurrentIndex(4);
+        m_tabs->setCurrentIndex(3);
         QTableWidget *t = bpTable();
         QVERIFY(t);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
@@ -607,7 +609,9 @@ private slots:
         QVERIFY(start && end && cond);
         QComboBox *type = m_tabs->currentWidget()->findChild<QComboBox *>();
         QVERIFY(type);
-        QPushButton *add = button(QStringLiteral("Add"));
+        QPushButton *add = nullptr;
+        for (QPushButton *b : m_tabs->currentWidget()->findChildren<QPushButton *>())
+            if (b->text() == QLatin1String("Add")) add = b;
         QPushButton *clear = button(QStringLiteral("Clear All"));
         QLabel *msg = nullptr;
         for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
@@ -617,20 +621,17 @@ private slots:
         /* exec at a hex address */
         typeInto(start, QStringLiteral("8009"));
         QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 1, 2000);
-        QCOMPARE(t->item(0, 1)->text(), QStringLiteral("exec"));
-        QCOMPARE(t->item(0, 2)->text(), QStringLiteral("$8009"));
+        QCOMPARE(t->item(0, 1)->text(), QStringLiteral("Exec  $8009"));
         QCOMPARE(t->item(0, 0)->checkState(), Qt::Checked);
         QVERIFY(start->text().isEmpty());
         /* a write watchpoint over a range, with a condition */
-        type->setCurrentText(QStringLiteral("write"));
+        type->setCurrentText(QStringLiteral("Write"));
         start->setText(QStringLiteral("8100"));
         end->setText(QStringLiteral("$81FF"));
         cond->setText(QStringLiteral("value > 0"));
         QTest::mouseClick(add, Qt::LeftButton);
         QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 2, 2000);
-        QCOMPARE(t->item(1, 1)->text(), QStringLiteral("write"));
-        QCOMPARE(t->item(1, 2)->text(), QStringLiteral("$8100-$81FF"));
-        QCOMPARE(t->item(1, 3)->text(), QStringLiteral("value > 0"));
+        QCOMPARE(t->item(1, 1)->text(), QStringLiteral("Write  $8100-$81FF  if value > 0"));
         /* errors are shown, not swallowed */
         cond->setText(QStringLiteral("nosuchname == 1"));
         start->setText(QStringLiteral("7000"));
@@ -638,7 +639,7 @@ private slots:
         QTest::mouseClick(add, Qt::LeftButton);
         QVERIFY(!msg->text().isEmpty());
         QCOMPARE(t->rowCount(), 2);
-        type->setCurrentText(QStringLiteral("in"));
+        type->setCurrentText(QStringLiteral("Port In"));
         cond->clear();
         start->setText(QStringLiteral("300"));
         QTest::mouseClick(add, Qt::LeftButton);
@@ -651,13 +652,13 @@ private slots:
         start->clear();
         end->clear();
         msg->clear();
-        type->setCurrentText(QStringLiteral("exec"));
+        type->setCurrentText(QStringLiteral("Execute"));
 
         /* the exec breakpoint stops the run, with its hits counted */
         QTest::keyClick(m_win, Qt::Key_F5);
         QTRY_VERIFY_WITH_TIMEOUT(astrodebug_is_stopped(m_d) && pcOf(m_d) == 0x8009, 3000);
         QTRY_VERIFY_WITH_TIMEOUT(statusLabel()->text().contains(QLatin1String("exec $8009")), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(t->item(0, 4) && t->item(0, 4)->text().toInt() >= 1, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(t->item(0, 2) && t->item(0, 2)->text().toInt() >= 1, 2000);
         /* unticking it lets the run pass; the write watch then stops it instead */
         t->item(0, 0)->setCheckState(Qt::Unchecked);
         astrodebug_breakpoint list[2];
@@ -670,7 +671,7 @@ private slots:
         QVERIFY(pcOf(m_d) != 0x8009);
         shot(QStringLiteral("breakpoints"));
         /* the row's delete button */
-        auto *rm = qobject_cast<QToolButton *>(t->cellWidget(1, 5));
+        auto *rm = qobject_cast<QToolButton *>(t->cellWidget(1, 3));
         QVERIFY(rm);
         QTest::mouseClick(rm, Qt::LeftButton);
         QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 1, 2000);
@@ -678,6 +679,278 @@ private slots:
         QTest::mouseClick(clear, Qt::LeftButton);
         QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 0, 2000);
         QCOMPARE(astrodebug_breakpoint_list(m_d, list, 2), 0);
+    }
+
+    QPlainTextEdit *memView()
+    {
+        return m_tabs->widget(2)->findChild<QPlainTextEdit *>();
+    }
+
+    /* Watches: add, live value, Memory, Break on change, Remove. */
+    void watchesTab()
+    {
+        astrowatch_clear();
+        astrodebug_write(m_d, 0x8110, 0x42);
+        m_tabs->setCurrentIndex(4);
+        QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
+        QTableWidget *t = m_tabs->currentWidget()->findChild<QTableWidget *>();
+        QLineEdit *e = m_tabs->currentWidget()->findChild<QLineEdit *>();
+        QVERIFY(t && e);
+        QCOMPARE(t->rowCount(), 0);
+        typeInto(e, QStringLiteral("$8110"));
+        QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 1, 2000);
+        QVERIFY(t->item(0, 0)->text().contains(QStringLiteral("$8110")));
+        QVERIFY(t->item(0, 0)->text().contains(QStringLiteral("$42")));
+        astrodebug_write(m_d, 0x8110, 0x43);
+        QTest::keyClick(m_win, Qt::Key_F7);             /* a stop refreshes the values */
+        QTRY_VERIFY_WITH_TIMEOUT(t->item(0, 0)->text().contains(QStringLiteral("$43")), 2000);
+        typeInto(e, QStringLiteral("$8120-$812F"));
+        QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 2, 2000);
+        /* while the machine runs the value is a dash */
+        QTest::keyClick(m_win, Qt::Key_F5);
+        QTRY_VERIFY_WITH_TIMEOUT(!astrodebug_is_stopped(m_d), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(t->item(0, 0)->text().contains(QLatin1String("-")) &&
+                                     !t->item(0, 0)->text().contains(QStringLiteral("$43")), 2000);
+        QTest::keyClick(m_win, Qt::Key_F5);
+        waitStopped();
+        shot(QStringLiteral("watches"));
+
+        /* Break on change adds a write breakpoint with the condition */
+        astrodebug_breakpoint_clear(m_d);
+        auto buttonOf = [&](int row, const QString &text) -> QPushButton * {
+            for (QPushButton *b : t->cellWidget(row, 1)->findChildren<QPushButton *>())
+                if (b->text() == text) return b;
+            return nullptr;
+        };
+        QPushButton *brk = buttonOf(0, QStringLiteral("Break on change"));
+        QVERIFY(brk);
+        QTest::mouseClick(brk, Qt::LeftButton);
+        astrodebug_breakpoint bp[2];
+        QCOMPARE(astrodebug_breakpoint_list(m_d, bp, 2), 1);
+        QVERIFY(bp[0].type & ASTRODEBUG_BP_WRITE);
+        QCOMPARE((int)bp[0].start, 0x8110);
+        QVERIFY(QString::fromUtf8(bp[0].condition).contains(QStringLiteral("old")));
+        astrodebug_breakpoint_clear(m_d);
+
+        /* Memory switches to the Memory tab with the range marked */
+        QPushButton *mem = buttonOf(1, QStringLiteral("Memory"));
+        QVERIFY(mem);
+        QTest::mouseClick(mem, Qt::LeftButton);
+        QCOMPARE(m_tabs->currentIndex(), 2);
+        QVERIFY(memView()->toPlainText().contains(QStringLiteral("$8120: ")));
+        QVERIFY(!memView()->extraSelections().isEmpty());
+
+        m_tabs->setCurrentIndex(4);
+        QTest::mouseClick(buttonOf(1, QStringLiteral("Remove")), Qt::LeftButton);
+        QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 1, 2000);
+        QCOMPARE(astrowatch_count(), 1);
+        astrowatch_clear();
+        QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 0, 2000);
+        m_tabs->setCurrentIndex(0);
+    }
+
+    /* Go to marks a range; Find Next / Previous step through hits. */
+    void memorySearch()
+    {
+        const uint8_t pat[4] = { 0xDE, 0xEE, 0xDE, 0xEE };
+        for (int i = 0; i < 4; ++i) astrodebug_write(m_d, (uint16_t)(0x8200 + i), pat[i]);
+        for (int i = 0; i < 4; ++i) astrodebug_write(m_d, (uint16_t)(0x8300 + i), pat[i]);
+        m_tabs->setCurrentIndex(2);
+        QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
+        QLineEdit *go = entryIs(QStringLiteral("$C000, label or lo-hi"));
+        typeInto(go, QStringLiteral("8200-8203"));
+        QVERIFY(memView()->toPlainText().contains(QStringLiteral("$8200: DE EE DE EE")));
+        QVERIFY(!memView()->extraSelections().isEmpty());
+        /* a label also works */
+        astrodebug_set_label(m_d, 0x8300, "found");
+        typeInto(go, QStringLiteral("found"));
+        QVERIFY(memView()->toPlainText().contains(QStringLiteral("$8300: DE EE")));
+        astrodebug_set_label(m_d, 0x8300, nullptr);
+
+        QLineEdit *find = entry(QStringLiteral("bytes or text"));
+        QVERIFY(find);
+        QLabel *note = nullptr;
+        for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
+            if (l->styleSheet().contains(QLatin1String("gray")) && l->text().isEmpty()) note = l;
+        QVERIFY(note);
+        typeInto(go, QStringLiteral("8200-8203"));
+        find->setText(QStringLiteral("DE EE DE"));
+        QTest::mouseClick(button(QStringLiteral("Find Next")), Qt::LeftButton);
+        QCOMPARE(note->text(), QStringLiteral("Found at $8300"));          /* after the marked one */
+        QTest::mouseClick(button(QStringLiteral("Find Previous")), Qt::LeftButton);
+        QCOMPARE(note->text(), QStringLiteral("Found at $8200"));
+        find->setText(QStringLiteral("DE EE DE EE FF 77 66"));
+        QTest::mouseClick(button(QStringLiteral("Find Next")), Qt::LeftButton);
+        QCOMPARE(note->text(), QStringLiteral("Not found"));
+        QCOMPARE(m_win->statusBar()->currentMessage(), QStringLiteral("Not found"));
+        /* text, case-insensitive */
+        for (int i = 0; i < 5; ++i) astrodebug_write(m_d, (uint16_t)(0x8400 + i), (uint8_t)"HeLLo"[i]);
+        m_tabs->currentWidget()->findChild<QComboBox *>()->setCurrentText(QStringLiteral("Text"));
+        find->setText(QStringLiteral("hello"));
+        typeInto(go, QStringLiteral("8000"));
+        QTest::mouseClick(button(QStringLiteral("Find Next")), Qt::LeftButton);
+        QCOMPARE(note->text(), QStringLiteral("Found at $8400"));
+        shot(QStringLiteral("search"));
+        m_tabs->currentWidget()->findChild<QComboBox *>()->setCurrentText(QStringLiteral("Hex"));
+        /* it needs a stopped machine */
+        QTest::keyClick(m_win, Qt::Key_F5);
+        QTRY_VERIFY_WITH_TIMEOUT(!astrodebug_is_stopped(m_d), 2000);
+        find->setText(QStringLiteral("DE EE"));
+        QTest::mouseClick(button(QStringLiteral("Find Next")), Qt::LeftButton);
+        QCOMPARE(m_win->statusBar()->currentMessage(), QStringLiteral("Stop the machine first"));
+        QTest::keyClick(m_win, Qt::Key_F5);
+        waitStopped();
+        m_tabs->setCurrentIndex(0);
+    }
+
+    /* Trace and History share the ring and the recorder. */
+    void traceAndHistory()
+    {
+        astrodebug_trace_enable(m_d, 0);
+        astrodebug_trace_clear(m_d);
+        m_tabs->setCurrentIndex(6);
+        QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
+        QPushButton *rec = m_tabs->currentWidget()->findChild<QPushButton *>();
+        QVERIFY(rec && rec->text() == QLatin1String("Record"));
+        QPushButton *rec2 = m_tabs->widget(7)->findChild<QPushButton *>();
+        QVERIFY(rec2 && rec2 != rec);
+        QVERIFY(!rec->isChecked());
+        QTest::mouseClick(rec, Qt::LeftButton);
+        QVERIFY(astrodebug_trace_enabled(m_d));
+        QVERIFY(rec->isChecked());
+        QTRY_VERIFY_WITH_TIMEOUT(rec2->isChecked(), 2000);                   /* in sync */
+        QTest::keyClick(m_win, Qt::Key_F5);                                  /* runs */
+        QTRY_VERIFY_WITH_TIMEOUT(!astrodebug_is_stopped(m_d), 2000);
+        auto *tr = m_tabs->currentWidget()->findChild<QPlainTextEdit *>();
+        QTRY_VERIFY_WITH_TIMEOUT(tr->toPlainText().contains(QStringLiteral("INC A")), 3000);   /* live */
+        QTest::keyClick(m_win, Qt::Key_F5);
+        waitStopped();
+        QTRY_VERIFY_WITH_TIMEOUT(astrodebug_trace_count(m_d) > 20, 2000);
+        /* History shows the same ring, oldest first, at the stop */
+        m_tabs->setCurrentIndex(7);
+        auto *hist = m_tabs->currentWidget()->findChild<QPlainTextEdit *>();
+        QTRY_VERIFY_WITH_TIMEOUT(hist->toPlainText().contains(QStringLiteral("INC A")), 2000);
+        QVERIFY(hist->toPlainText().count(QLatin1Char('\n')) < 2000);
+        QLabel *note = nullptr;
+        for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
+            if (l->text().contains(QLatin1String("instructions"))) note = l;
+        QVERIFY(note && note->text().startsWith(QLatin1String("recording")));
+        shot(QStringLiteral("history"));
+        /* a branches-only filter leaves jumps, calls and returns */
+        auto *filter = m_tabs->currentWidget()->findChild<QComboBox *>();
+        filter->setCurrentIndex(1);
+        QTRY_VERIFY_WITH_TIMEOUT(!hist->toPlainText().contains(QStringLiteral("INC A")), 2000);
+        QVERIFY(hist->toPlainText().contains(QStringLiteral("JP ")));
+        /* a range filter */
+        filter->setCurrentIndex(2);
+        auto *range = m_tabs->currentWidget()->findChild<QLineEdit *>();
+        typeInto(range, QStringLiteral("800F-800F"));
+        QTRY_VERIFY_WITH_TIMEOUT(hist->toPlainText().contains(QStringLiteral("LD (HL),A")) &&
+                                     !hist->toPlainText().contains(QStringLiteral("INC A")), 2000);
+        filter->setCurrentIndex(0);
+        /* Clear */
+        for (QPushButton *b : m_tabs->currentWidget()->findChildren<QPushButton *>())
+            if (b->text() == QLatin1String("Clear")) QTest::mouseClick(b, Qt::LeftButton);
+        QCOMPARE(astrodebug_trace_count(m_d), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(!hist->toPlainText().contains(QStringLiteral("INC A")), 2000);
+        /* and off, from either tab */
+        QTest::mouseClick(m_tabs->widget(7)->findChild<QPushButton *>(), Qt::LeftButton);
+        QVERIFY(!astrodebug_trace_enabled(m_d));
+        QTRY_VERIFY_WITH_TIMEOUT(!m_tabs->widget(6)->findChild<QPushButton *>()->isChecked(), 2000);
+        m_tabs->setCurrentIndex(0);
+    }
+
+    /* Any tab can leave for a window of its own and come back to its place. */
+    void popOutAndDock()
+    {
+        m_tabs->setCurrentIndex(3);
+        QPushButton *pop = button(QStringLiteral("Pop Out"));
+        QVERIFY(pop);
+        QTest::mouseClick(pop, Qt::LeftButton);
+        QCOMPARE(m_tabs->count(), 9);
+        QWidget *win = nullptr;
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (w->windowTitle() == QLatin1String("Astrocade Debugger - Breakpoints")) win = w;
+        QVERIFY(win);
+        QTRY_VERIFY_WITH_TIMEOUT(win->isVisible(), 1000);
+        QVERIFY(win->findChild<QTableWidget *>());
+        QCOMPARE(win->property("astroHelpContext").toString(), QStringLiteral("debugger/breakpoints"));
+        /* the popped tab keeps refreshing: a breakpoint added shows in its window */
+        astrodebug_breakpoint_toggle(m_d, 0x8009);
+        QTRY_COMPARE_WITH_TIMEOUT(win->findChild<QTableWidget *>()->rowCount(), 1, 2000);
+        astrodebug_breakpoint_clear(m_d);
+        shot(QStringLiteral("popout"));
+        QPushButton *dockBtn = nullptr;
+        for (QPushButton *b : win->findChildren<QPushButton *>())
+            if (b->text() == QLatin1String("Dock")) dockBtn = b;
+        QVERIFY(dockBtn);
+        QTest::mouseClick(dockBtn, Qt::LeftButton);
+        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 10, 1000);
+        QCOMPARE(m_tabs->tabText(3), QStringLiteral("Breakpoints"));       /* back in its place */
+        /* closing the window docks it too; several can be out, but one stays */
+        m_tabs->setCurrentIndex(5);
+        QTest::mouseClick(pop, Qt::LeftButton);
+        QCOMPARE(m_tabs->count(), 9);
+        QCOMPARE(m_tabs->tabText(5), QStringLiteral("Trace"));
+        QWidget *cart = nullptr;
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (w->windowTitle() == QLatin1String("Astrocade Debugger - Cart & I/O")) cart = w;
+        QVERIFY(cart);
+        cart->close();
+        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 10, 1000);
+        QCOMPARE(m_tabs->tabText(5), QStringLiteral("Cart && I/O"));
+        for (int i = 0; i < 9; ++i) {
+            m_tabs->setCurrentIndex(0);
+            QTest::mouseClick(pop, Qt::LeftButton);
+        }
+        QCOMPARE(m_tabs->count(), 1);
+        QTest::mouseClick(pop, Qt::LeftButton);                          /* the last stays */
+        QCOMPARE(m_tabs->count(), 1);
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (w->windowTitle().startsWith(QLatin1String("Astrocade Debugger - "))) w->close();
+        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 10, 1000);
+        QStringList names;
+        for (int i = 0; i < m_tabs->count(); ++i) names << m_tabs->tabText(i);
+        QCOMPARE(names.first(), QStringLiteral("Console"));
+        QCOMPARE(names.last(), QStringLiteral("FujiNet"));
+        QCOMPARE(names.at(5), QStringLiteral("Cart && I/O"));
+    }
+
+    /* A new stop pulls the disassembly back to the PC from wherever it was
+     * scrolled, and the Breakpoints tab says why it stopped. */
+    void stopRecentresAndNames()
+    {
+        m_tabs->setCurrentIndex(1);
+        QCheckBox *follow = check(QStringLiteral("Follow PC"));
+        QPlainTextEdit *v = disasmView();
+        QTRY_VERIFY_WITH_TIMEOUT(lineOf(v, 0x8007) >= 0, 2000);
+        const QPoint p = v->viewport()->rect().center();
+        QWheelEvent wheel(p, v->viewport()->mapToGlobal(p), QPoint(), QPoint(0, -600), Qt::NoButton, {},
+                          Qt::NoScrollPhase, false);
+        QApplication::sendEvent(v->viewport(), &wheel);
+        QVERIFY(!follow->isChecked());
+        QTest::keyClick(m_win, Qt::Key_F7);
+        QTRY_VERIFY_WITH_TIMEOUT(follow->isChecked(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(lineOf(v, pcOf(m_d)) >= 0, 2000);
+        m_tabs->setCurrentIndex(3);
+        QLabel *stop = nullptr;
+        for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
+            if (l->text().startsWith(QLatin1String("Stopped"))) stop = l;
+        QVERIFY(stop);
+        QVERIFY(stop->text().startsWith(QLatin1String("Stopped")));
+        QTest::keyClick(m_win, Qt::Key_F5);
+        QTRY_VERIFY_WITH_TIMEOUT(stop->text() == QLatin1String("Running."), 2000);
+        QTest::keyClick(m_win, Qt::Key_F5);
+        waitStopped();
+        /* Clear Hits and the full set of types */
+        QComboBox *type = m_tabs->currentWidget()->findChild<QComboBox *>();
+        QStringList types;
+        for (int i = 0; i < type->count(); ++i) types << type->itemText(i);
+        QCOMPARE(types, (QStringList{ QStringLiteral("Execute"), QStringLiteral("Read"), QStringLiteral("Write"),
+                                      QStringLiteral("Read/Write"), QStringLiteral("Port In"),
+                                      QStringLiteral("Port Out"), QStringLiteral("Port In/Out") }));
+        QVERIFY(button(QStringLiteral("Clear Hits")));
+        m_tabs->setCurrentIndex(0);
     }
 
     void otherTabs()
@@ -691,7 +964,7 @@ private slots:
         QVERIFY(!io->toPlainText().isEmpty());
         shot(QStringLiteral("memmap"));
         /* Video chip: the pictures and the decoded registers */
-        m_tabs->setCurrentIndex(3);
+        m_tabs->setCurrentIndex(8);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         QTRY_VERIFY_WITH_TIMEOUT(
             [&] {
@@ -706,7 +979,7 @@ private slots:
         QVERIFY(!regs->toPlainText().isEmpty());
         shot(QStringLiteral("video"));
         /* FujiNet: empty without the runtime, and says so */
-        m_tabs->setCurrentIndex(6);
+        m_tabs->setCurrentIndex(9);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         bool note = false;
         for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
@@ -765,7 +1038,7 @@ private slots:
      * machine stops at its first instruction and the window follows. */
     void sessionRestart()
     {
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(1);
         astrodebug_breakpoint_toggle(m_d, 0x8009);
         astrosession_stop(m_s);
         QCOMPARE(astrosession_start(m_s, &m_opts), 0);

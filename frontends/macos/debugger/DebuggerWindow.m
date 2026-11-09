@@ -3,8 +3,9 @@
  * core/include/astrodebug.h, and the data chip's video snapshot, via
  * core/include/astrovid.h. Mirrors the ADAM, SMS and MSX siblings' macOS
  * debuggers (and the GTK, Qt and Win32 debuggers), tab for tab: Console,
- * CPU & Memory, Disassembly, Video chip, Breakpoints, Memory Map & I/O,
- * FujiNet.
+ * Disassembly, Memory, Breakpoints, Watches, Cart & I/O, Trace, History,
+ * Video chip, FujiNet. The registers sit in a strip under the tabs; any tab
+ * can be popped out into a window of its own (Pop Out / Dock).
  *
  * Opening the window attaches the engine, which stops the machine; closing
  * it (F12, the close button, the menu) detaches, and the machine runs on.
@@ -24,9 +25,10 @@
  * on the selected disassembly line, F12 close.
  *
  * ASTRO_DEBUGGER_TAB picks the tab shown first: an index (0 Console,
- * 1 CPU & Memory, 2 Disassembly, 3 Video chip, 4 Breakpoints,
- * 5 Memory Map & I/O, 6 FujiNet) or the start of a tab's name ("vram" is the
- * Video chip tab).
+ * 1 Disassembly, 2 Memory, 3 Breakpoints, 4 Watches, 5 Cart & I/O, 6 Trace,
+ * 7 History, 8 Video chip, 9 FujiNet) or the start of a tab's name ("vram" is
+ * the Video chip tab, "io" the Cart & I/O tab). For captures: ASTRO_WATCH,
+ * ASTRO_WATCH_BREAK, ASTRO_MEM_GOTO, ASTRO_HISTORY=1 and ASTRO_POPOUT=<tab>.
  *
  * Highlights: the PC's line is the Astrocade dark red with white text, an
  * enabled breakpoint's marker red and a disabled one's grey, the selected line
@@ -59,22 +61,30 @@
 #include <unistd.h>
 
 #include "astrodebug.h"
+#include "astromemtools.h"
 #include "astrovid.h"
 
 #define DISASM_WINDOW 48
 #define MAX_BPS 64
 #define NUM_REGS 17
-#define NUM_FLAGS 6
+#define NUM_FLAGS 8
 #define MEM_ROWS 32            /* the hex dump: 16 bytes a row */
 #define MEM_BYTES (MEM_ROWS * 16)
 #define TRACE_MAX 512          /* FujiNet packets shown */
 #define TAB_CONSOLE 0          /* the tabs, in order */
-#define TAB_CPU 1
-#define TAB_DISASM 2
-#define TAB_VIDEO 3
-#define TAB_BREAKS 4
-#define TAB_IO 5
-#define TAB_FUJINET 6
+#define TAB_DISASM 1
+#define TAB_MEMORY 2
+#define TAB_BREAKS 3
+#define TAB_WATCHES 4
+#define TAB_CART 5
+#define TAB_TRACE 6
+#define TAB_HIST 7
+#define TAB_VIDEO 8
+#define TAB_FUJINET 9
+#define NUM_TABS 10
+#define HIST_RING 65536        /* the engine's trace ring */
+#define HIST_SHOWN 2000        /* the newest matching lines a tab shows */
+#define TRACE_TICKS 4          /* 4 x 100 ms: the Trace tab's live refresh */
 #define LIVE_TICKS 5           /* 5 x 100 ms: the live refresh while running */
 #define PAL_ROWS 16            /* 512 pens / 32 columns */
 
@@ -204,7 +214,27 @@ static NSImage *imageFromXRGB(const uint32_t *px, int w, int h, int stride)
     NSTextView *_mem;
     NSTextField *_memGoto, *_memWrite;
     int _memBase;               /* the dump's first address */
-    int _memMark;               /* the address Go to marked, or -1 */
+    BOOL _memHl;                /* a range is highlighted: Go to, a hit, a watch */
+    int _memHlLo, _memHlHi;
+    NSPopUpButton *_srchKind;
+    NSTextField *_srchEntry, *_srchNote;
+
+    uint64_t _seenStop;         /* astrodebug_stop_serial() last acted on */
+    BOOL _scrolledAway;         /* the wheel moved the disassembly off the PC */
+    int _traceTicks;
+
+    NSStackView *_wtList;
+    NSString *_wtSig;
+    NSTextField *_wtEntry;
+
+    NSTextView *_cartText;
+    NSButton *_hRec[2];         /* Trace (0) and History (1) share one ring */
+    NSPopUpButton *_hFilter[2];
+    NSTextField *_hRange[2], *_hNote[2];
+    NSTextView *_hText[2];
+
+    NSTabViewItem *_items[NUM_TABS];    /* each tab's item, in order */
+    NSWindow *_popped[NUM_TABS];        /* its own window while popped out */
 
     NSButton *_followPc;
     NSTextField *_jump;
@@ -220,12 +250,9 @@ static NSImage *imageFromXRGB(const uint32_t *px, int w, int h, int stride)
     BOOL _haveSnap;
 
     NSPopUpButton *_bpType;
-    NSTextField *_bpStart, *_bpEnd, *_bpCond, *_bpErr;
+    NSTextField *_bpStart, *_bpEnd, *_bpCond, *_bpErr, *_bpStop;
     NSStackView *_bpList;
     NSString *_bpSig;
-
-    NSTextField *_mapNote;
-    NSTextView *_io;
 
     NSTextField *_fujiNote;
     NSTextView *_fujiText, *_fujiState;
@@ -243,10 +270,31 @@ static NSString *const kFileNames[NUM_FILE_KINDS] = {
 };
 
 /* ASTRO_DEBUGGER_TAB takes an index or the start of one of these. */
-#define NUM_TABS 7
 static const char *const kTabNames[NUM_TABS] = {
-    "console", "cpu & memory", "disassembly", "video chip", "breakpoints", "memory map & i/o", "fujinet"
+    "console", "disassembly", "memory", "breakpoints", "watches", "cart & i/o", "trace", "history", "video chip",
+    "fujinet"
 };
+static NSString *const kTabTitles[NUM_TABS] = {
+    @"Console", @"Disassembly", @"Memory", @"Breakpoints", @"Watches", @"Cart & I/O", @"Trace", @"History",
+    @"Video chip", @"FujiNet"
+};
+/* Help's contexts (astrohelp.h), one per tab */
+static NSString *const kHelpTabs[NUM_TABS] = {
+    @"console", @"disassembly", @"memory", @"breakpoints", @"watches", @"cart", @"trace", @"history", @"video",
+    @"fujinet"
+};
+
+/* A tab by index or by the start of its name; -1 for none. */
+static int tabFromText(const char *tab)
+{
+    if (!tab || !*tab) return -1;
+    if (tab[0] >= '0' && tab[0] <= '9') return atoi(tab);
+    if (!strncasecmp(tab, "vram", 4)) return TAB_VIDEO;
+    if (!strncasecmp(tab, "io", 2) || !strncasecmp(tab, "i/o", 3)) return TAB_CART;
+    for (int i = 0; i < NUM_TABS; i++)
+        if (!strncasecmp(tab, kTabNames[i], strlen(tab))) return i;
+    return -1;
+}
 
 /* ---- helpers --------------------------------------------------------------- */
 
@@ -518,6 +566,8 @@ static void fill(NSStackView *stack, NSView *view)
 {
     if (_window.isMiniaturized) [_window deminiaturize:nil];
     [_window makeKeyAndOrderFront:nil];
+    for (int t = 0; t < NUM_TABS; t++)
+        if (_popped[t]) [_popped[t] orderFront:nil];
     const unsigned gen = astrodebug_generation(_dbg);
     astrodebug_attach(_dbg);
     [self settleFrom:gen];
@@ -533,10 +583,29 @@ static void fill(NSStackView *stack, NSView *view)
     _dbg = astrosession_debugger(session);
     _fujiCount = -1;
     _memBase = 0x4000;
-    _memMark = -1;
     _selected = -1;
     _history = [NSMutableArray array];
     [self buildWindow];
+
+    /* For captures and tests, like ASTRO_DEBUGGER_TAB */
+    {
+        const char *watch = getenv("ASTRO_WATCH");
+        const char *watchBreak = getenv("ASTRO_WATCH_BREAK");
+        const char *gotoText = getenv("ASTRO_MEM_GOTO");
+        const char *history = getenv("ASTRO_HISTORY");
+        const char *popOut = getenv("ASTRO_POPOUT");
+        uint16_t lo, hi;
+        if (watch && *watch) astrowatch_add(watch);
+        if (watchBreak && *watchBreak && astrosym_parse_range(_dbg, watchBreak, &lo, &hi))
+            [self breakOnChangeLo:lo hi:hi];
+        if (gotoText && *gotoText && astrosym_parse_range(_dbg, gotoText, &lo, &hi))
+            [self showMemLo:lo hi:hi];
+        if (history && *history) astrodebug_trace_enable(_dbg, 1);
+        if (popOut && *popOut) {
+            const int t = tabFromText(popOut);
+            if (t >= 0 && t < NUM_TABS) [self popOutTab:t];
+        }
+    }
 
     __weak DebuggerWindow *weakSelf = self;
     _tick = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
@@ -550,7 +619,7 @@ static void fill(NSStackView *stack, NSView *view)
     _keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
                                                         handler:^NSEvent *(NSEvent *event) {
         DebuggerWindow *s = weakSelf;
-        if (!s || event.window != s->_window || !s->_window.isVisible) return event;
+        if (!s || ![s ownsWindow:event.window] || !s->_window.isVisible) return event;
         return [s handleKey:event] ? nil : event;
     }];
     return self;
@@ -566,11 +635,45 @@ static void fill(NSStackView *stack, NSView *view)
 {
     if (note.object != _window) return;
     astrodebug_detach(_dbg);
+    for (int t = 0; t < NUM_TABS; t++)
+        [_popped[t] orderOut:nil];     /* they come back with the window */
 }
 
+/* Closing a popped-out tab's window docks the tab again. */
+- (BOOL)windowShouldClose:(NSWindow *)sender
+{
+    for (int t = 0; t < NUM_TABS; t++)
+        if (sender == _popped[t]) {
+            [self dockTab:t];
+            return NO;
+        }
+    return YES;
+}
+
+/* The debugger's main window or one of its popped-out tabs. */
+- (BOOL)ownsWindow:(NSWindow *)window
+{
+    if (!window) return NO;
+    if (window == _window) return YES;
+    for (int t = 0; t < NUM_TABS; t++)
+        if (_popped[t] == window) return YES;
+    return NO;
+}
+
+/* The tab the main window's notebook shows, by its place in the full order
+ * (-1 if none). */
 - (NSInteger)currentTab
 {
-    return [_tabs indexOfTabViewItem:_tabs.selectedTabViewItem];
+    NSTabViewItem *selected = _tabs.selectedTabViewItem;
+    for (int t = 0; t < NUM_TABS; t++)
+        if (_items[t] == selected) return t;
+    return -1;
+}
+
+/* On screen: the notebook's page, or a window of its own. */
+- (BOOL)tabVisible:(int)tab
+{
+    return _popped[tab] != nil || [self currentTab] == tab;
 }
 
 /* The poll: refresh on a stop, a resume or a command (the generation), and
@@ -582,16 +685,29 @@ static void fill(NSStackView *stack, NSView *view)
     if (![_window isVisible]) return;
     const unsigned gen = astrodebug_generation(_dbg);
     const BOOL stopped = astrodebug_is_stopped(_dbg) != 0;
-    if (gen != _seenGen || stopped != _wasStopped) {
+    const uint64_t stopSerial = astrodebug_stop_serial(_dbg);
+    if (gen != _seenGen || stopped != _wasStopped || stopSerial != _seenStop) {
+        if (stopSerial != _seenStop) {
+            /* a new stop brings the disassembly back to the PC, even if the
+             * wheel moved it away */
+            _seenStop = stopSerial;
+            if (_scrolledAway) {
+                _scrolledAway = NO;
+                _followPc.state = NSControlStateValueOn;
+            }
+        }
         [self refreshNow];
     } else if (++_liveTicks >= LIVE_TICKS) {
         _liveTicks = 0;
         if (!stopped) {
             [self refreshStatus];
             [self refreshTab];
-        } else if ([self currentTab] == TAB_FUJINET) {
+        } else if ([self tabVisible:TAB_FUJINET]) {
             [self refreshFujinet:NO];
         }
+    } else if (!stopped && [self tabVisible:TAB_TRACE] && ++_traceTicks >= TRACE_TICKS) {
+        _traceTicks = 0;        /* the Trace tab follows the machine */
+        [self refreshHist:0];
     }
 }
 
@@ -605,13 +721,10 @@ static void fill(NSStackView *stack, NSView *view)
     }
 }
 
-/* Help's contexts (astrohelp.h), one per tab */
 - (void)updateHelpContext
 {
-    static NSString *const kHelpTabs[] = { @"console", @"cpu", @"disassembly", @"video", @"breakpoints", @"io",
-                                           @"fujinet" };
-    NSInteger i = [_tabs indexOfTabViewItem:_tabs.selectedTabViewItem];
-    if (i >= 0 && i < 7)
+    const NSInteger i = [self currentTab];
+    if (i >= 0 && i < NUM_TABS)
         AstroSetHelpContext(_window, [@"debugger/" stringByAppendingString:kHelpTabs[i]]);
 }
 
@@ -660,7 +773,8 @@ static void fill(NSStackView *stack, NSView *view)
     return v;
 }
 
-- (NSView *)buildCpu
+/* The registers, flags and beam, under the tabs on every one of them. */
+- (NSView *)buildRegStrip
 {
     static NSString *const names[NUM_REGS] = {
         @"PC", @"SP", @"AF", @"BC", @"DE", @"HL", @"IX", @"IY",
@@ -674,31 +788,48 @@ static void fill(NSStackView *stack, NSView *view)
         [row addObject:[self label:names[i]]];
         _reg[i] = [self field:@"" width:width action:@selector(applyRegister:)];
         _reg[i].tag = i;
+        _reg[i].toolTip = @"Edit while the machine is stopped (hex, $hex, a label or an expression), then Enter";
         [row addObject:_reg[i]];
     }
-    static NSString *const fnames[NUM_FLAGS] = { @"S", @"Z", @"H", @"PV", @"N", @"C" };
+    static NSString *const fnames[NUM_FLAGS] = { @"S", @"Z", @"Y", @"H", @"X", @"P", @"N", @"C" };
     NSMutableArray *flags = [NSMutableArray arrayWithObject:[self label:@"Flags"]];
     for (int i = 0; i < NUM_FLAGS; i++) {
         _flag[i] = [NSButton checkboxWithTitle:fnames[i] target:self action:@selector(flagClicked:)];
         _flag[i].tag = i;
         [flags addObject:_flag[i]];
     }
-    NSTextField *editHint = [self hint:@"Registers and flags can be edited while the machine is stopped (hex, $hex, a label or an expression)"];
-    [flags addObject:editHint];
     _beam = [self hint:@""];
+    [flags addObject:_beam];
 
+    return vstack(@[hstack(row1), hstack(row2), hstack(flags)]);
+}
+
+- (NSView *)buildMemory
+{
     NSScrollView *memScroll;
     _mem = monoView(&memScroll, NO);
-    _memGoto = [self field:@"address or label" width:150 action:@selector(gotoMem:)];
+    _memGoto = [self field:@"address, label or lo-hi" width:180 action:@selector(gotoMem:)];
+    NSButton *go = [self button:@"Go" action:@selector(gotoMem:)];
     NSButton *prev = [self button:@"◀" action:@selector(memPrev:)];
     NSButton *next = [self button:@"▶" action:@selector(memNext:)];
-    NSStackView *memHead = hstack(@[[self label:@"Memory (as the CPU sees it)"], [self label:@"Go to"], _memGoto,
+    NSStackView *memHead = hstack(@[[self label:@"Memory (as the CPU sees it)"], [self label:@"Go to"], _memGoto, go,
                                     prev, next]);
+
+    _srchKind = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_srchKind addItemsWithTitles:@[@"Hex", @"Text"]];
+    _srchKind.toolTip = @"Hex bytes (3E 5A) or text, one byte per character";
+    [_srchKind setRefusesFirstResponder:YES];
+    _srchEntry = [self field:@"hex bytes or text" width:220 action:@selector(searchNext:)];
+    _srchNote = [self hint:@""];
+    NSStackView *searchRow = hstack(@[[self label:@"Search"], _srchKind, _srchEntry,
+                                      [self button:@"Find Next" action:@selector(searchNext:)],
+                                      [self button:@"Find Previous" action:@selector(searchPrev:)], _srchNote]);
+
     _memWrite = [self field:@"address value" width:170 action:@selector(writeMem:)];
     NSStackView *edit = hstack(@[[self label:@"Poke"], _memWrite,
                                  [self hint:@"RAM takes it; ROM ignores it. Several values go to consecutive addresses"]]);
 
-    NSStackView *v = vstack(@[hstack(row1), hstack(row2), hstack(flags), _beam, memHead, memScroll, edit]);
+    NSStackView *v = vstack(@[memHead, searchRow, memScroll, edit]);
     fill(v, memScroll);
     return v;
 }
@@ -710,7 +841,7 @@ static void fill(NSStackView *stack, NSView *view)
     _jump = [self field:@"address or label" width:150 action:@selector(jumpTo:)];
     NSStackView *row = hstack(@[_followPc, [self label:@"Jump to"], _jump,
                                 [self hint:@"Click a line to select it (Run to Cursor); click its left edge, double-click it "
-                                           @"or press F9 for a breakpoint (* on, o off); scroll to browse"]]);
+                                           @"or press F9 for a breakpoint (red dot on, grey ring off); scroll to browse"]]);
 
     NSScrollView *scroll = [[NSScrollView alloc] init];
     scroll.hasVerticalScroller = NO;
@@ -737,6 +868,7 @@ static void fill(NSStackView *stack, NSView *view)
         DebuggerWindow *s = weakSelf;
         if (!s || rows == 0) return;
         s->_followPc.state = NSControlStateValueOff;
+        s->_scrolledAway = YES;
         s->_disasmAddr = (uint16_t)astrodebug_row_address(s->_dbg, s->_disasmAddr, rows);
         [s refreshDisasm];
     };
@@ -809,8 +941,10 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     /* the table's rows scroll: a session can collect more breakpoints than
      * the tab is tall. The stack is the scroll view's document, pinned to
      * the top and to the clip view's width so rows keep the tab's width. */
-    NSStackView *header = hstack(@[bpCell(@"On  #", 70, YES), bpCell(@"Type", 60, YES), bpCell(@"Range", 190, YES),
-                                   bpCell(@"Condition", 0, YES), bpCell(@"Hits", 60, YES), bpCell(@"", 70, YES)]);
+    _bpStop = [self label:@""];
+    _bpStop.textColor = NSColor.secondaryLabelColor;
+    NSStackView *header = hstack(@[bpCell(@"On  #", 70, YES), bpCell(@"Breakpoint", 0, YES), bpCell(@"Hits", 60, YES),
+                                   bpCell(@"", 70, YES)]);
     header.distribution = NSStackViewDistributionFill;
     _bpList = vstack(@[]);
     _bpList.translatesAutoresizingMaskIntoConstraints = NO;
@@ -824,21 +958,24 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     [_bpList.widthAnchor constraintEqualToAnchor:clip.widthAnchor].active = YES;
 
     _bpType = [[NSPopUpButton alloc] init];
-    [_bpType addItemsWithTitles:@[@"exec", @"read", @"write", @"in", @"out"]];
+    [_bpType addItemsWithTitles:@[@"Execute", @"Read", @"Write", @"Read/Write", @"Port In", @"Port Out",
+                                  @"Port In/Out"]];
     _bpStart = [self field:@"$8000, a label, or port $FF" width:190 action:@selector(addBreakpoint:)];
     _bpEnd = [self field:@"end (optional)" width:120 action:@selector(addBreakpoint:)];
     _bpCond = [self field:@"condition (optional): a == 5" width:0 action:@selector(addBreakpoint:)];
     NSButton *add = [self button:@"Add" action:@selector(addBreakpoint:)];
+    NSButton *clearHits = [self button:@"Clear Hits" action:@selector(clearHits:)];
     NSButton *clear = [self button:@"Clear All" action:@selector(clearBreaks:)];
     NSStackView *row = hstack(@[_bpType, [self label:@"Start"], _bpStart, [self label:@"End"], _bpEnd,
-                                [self label:@"Condition"], _bpCond, add, clear]);
+                                [self label:@"Condition"], _bpCond, add, clearHits, clear]);
     row.distribution = NSStackViewDistributionFill;
     _bpErr = [self label:@""];
     _bpErr.textColor = NSColor.systemRedColor;
-    NSTextField *hint = [self hint:@"Untick to disable. A condition is an expression, e.g. a == 5 or, on read/write/in/out, "
-                                   @"addr == $6000 && value > 3. A port is 0-255 for in/out; the end defaults to the start."];
+    NSTextField *hint = [self hint:@"Untick to disable. A condition is an expression, e.g. a == 5 or, on a read, write or port "
+                                   @"break, addr == $6000 && value > 3 (old is the byte before a write). A port is 0-255; "
+                                   @"the end defaults to the start."];
 
-    NSStackView *v = vstack(@[header, bpScroll, hint, row, _bpErr]);
+    NSStackView *v = vstack(@[_bpStop, header, bpScroll, hint, row, _bpErr]);
     fill(v, header);
     fill(v, bpScroll);
     fill(v, row);
@@ -846,19 +983,62 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     return v;
 }
 
-/* A line on what is mapped where, over the memory map and the data chip's
- * ports. */
-- (NSView *)buildIo
+/* Watches: an entry, then a row for each with its value and three buttons. */
+- (NSView *)buildWatches
 {
-    _mapNote = [self label:@""];
-    _mapNote.textColor = NSColor.secondaryLabelColor;
-    _mapNote.lineBreakMode = NSLineBreakByTruncatingTail;
-    [_mapNote setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
+    _wtEntry = [self field:@"address, label, expression or lo-hi" width:0 action:@selector(addWatch:)];
+    NSStackView *row = hstack(@[[self label:@"Watch"], _wtEntry, [self button:@"Add" action:@selector(addWatch:)]]);
+    row.distribution = NSStackViewDistributionFill;
+
+    _wtList = vstack(@[]);
+    _wtList.translatesAutoresizingMaskIntoConstraints = NO;
+    NSScrollView *scroll = [[NSScrollView alloc] init];
+    scroll.hasVerticalScroller = YES;
+    scroll.drawsBackground = NO;
+    scroll.documentView = _wtList;
+    NSClipView *clip = scroll.contentView;
+    [_wtList.topAnchor constraintEqualToAnchor:clip.topAnchor].active = YES;
+    [_wtList.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor].active = YES;
+    [_wtList.widthAnchor constraintEqualToAnchor:clip.widthAnchor].active = YES;
+
+    NSTextField *hint = [self hint:@"Values show while the machine is stopped. Memory shows the watch in the Memory tab; "
+                                   @"Break on change stops when the machine writes a different value there."];
+    NSStackView *v = vstack(@[row, scroll, hint]);
+    fill(v, row);
+    fill(v, scroll);
+    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    return v;
+}
+
+/* The cartridge, the memory map and the data chip's ports in one text. */
+- (NSView *)buildCart
+{
     NSScrollView *scroll;
-    _io = monoView(&scroll, NO);
-    NSStackView *v = vstack(@[_mapNote, scroll]);
-    fill(v, _mapNote);
+    _cartText = monoView(&scroll, NO);
+    NSStackView *v = vstack(@[scroll]);
+    fill(v, scroll);
+    return v;
+}
+
+/* Trace (idx 0) and History (idx 1): two views of the engine's one ring. */
+- (NSView *)buildHist:(int)idx
+{
+    _hRec[idx] = [self button:@"Record" action:@selector(histRec:)];
+    [_hRec[idx] setButtonType:NSButtonTypePushOnPushOff];
+    _hRec[idx].toolTip = @"Record every instruction the CPU runs (the machine runs a little slower)";
+    _hFilter[idx] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_hFilter[idx] addItemsWithTitles:@[@"All instructions", @"Branches only", @"In range"]];
+    _hFilter[idx].target = self;
+    _hFilter[idx].action = @selector(histChanged:);
+    [_hFilter[idx] setRefusesFirstResponder:YES];
+    _hRange[idx] = [self field:@"range: lo-hi or a label" width:180 action:@selector(histChanged:)];
+    _hNote[idx] = [self hint:@""];
+    NSStackView *bar = hstack(@[_hRec[idx], _hFilter[idx], _hRange[idx], [self button:@"Clear" action:@selector(histClear:)],
+                                _hNote[idx]]);
+    NSScrollView *scroll;
+    _hText[idx] = monoView(&scroll, NO);
+    NSStackView *v = vstack(@[bar, scroll]);
+    fill(v, bar);
     fill(v, scroll);
     return v;
 }
@@ -921,6 +1101,8 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     NSButton *toCursor = [self button:@"Run to Cursor" action:@selector(runToCursor:)];
     NSButton *frame = [self button:@"Frame (⇧F7)" action:@selector(frame:)];
     NSButton *symbols = [self button:@"Load Symbols…" action:@selector(loadSymbols:)];
+    NSButton *popBtn = [self button:@"Pop Out" action:@selector(popOutCurrent:)];
+    popBtn.toolTip = @"Move the tab that shows into a window of its own; Dock puts it back";
     NSMutableArray *saveTitles = [NSMutableArray array];
     for (int i = 0; i < NUM_FILE_KINDS; i++) [saveTitles addObject:kFileTitles[i]];
     NSPopUpButton *save = [self pullDown:@"Save…" items:saveTitles action:@selector(saveFile:)];
@@ -930,20 +1112,19 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     _status.lineBreakMode = NSLineBreakByTruncatingTail;
     NSButton *helpBtn = AstroHelpButton(nil);
     [helpBtn setRefusesFirstResponder:YES];
-    NSStackView *toolbar = hstack(@[_runBtn, step, over, outBtn, toCursor, frame, symbols, save, _status, helpBtn]);
+    NSStackView *toolbar = hstack(@[_runBtn, step, over, outBtn, toCursor, frame, symbols, save, popBtn, _status, helpBtn]);
     [_status setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _tabs = [[NSTabView alloc] init];
-    NSArray *pages = @[ @[@"Console", [self buildConsole]], @[@"CPU & Memory", [self buildCpu]],
-                        @[@"Disassembly", [self buildDisasm]], @[@"Video chip", [self buildVideo]],
-                        @[@"Breakpoints", [self buildBreaks]], @[@"Memory Map & I/O", [self buildIo]],
-                        @[@"FujiNet", [self buildFujinet]] ];
-    for (NSArray *page in pages) {
-        NSTabViewItem *item = [[NSTabViewItem alloc] initWithIdentifier:page[0]];
-        item.label = page[0];
-        NSView *content = page[1];
+    NSArray *pages = @[ [self buildConsole], [self buildDisasm], [self buildMemory], [self buildBreaks],
+                        [self buildWatches], [self buildCart], [self buildHist:0], [self buildHist:1],
+                        [self buildVideo], [self buildFujinet] ];
+    for (int i = 0; i < NUM_TABS; i++) {
+        NSTabViewItem *item = [[NSTabViewItem alloc] initWithIdentifier:kTabTitles[i]];
+        item.label = kTabTitles[i];
+        NSView *content = pages[(NSUInteger)i];
         NSView *holder = [[NSView alloc] init];
         [holder addSubview:content];
         content.translatesAutoresizingMaskIntoConstraints = NO;
@@ -952,28 +1133,21 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
         [content.topAnchor constraintEqualToAnchor:holder.topAnchor constant:6].active = YES;
         [content.bottomAnchor constraintEqualToAnchor:holder.bottomAnchor constant:-6].active = YES;
         item.view = holder;
+        _items[i] = item;
         [_tabs addTabViewItem:item];
     }
-    const char *tab = getenv("ASTRO_DEBUGGER_TAB");
-    if (tab && *tab) {
-        int t = -1;
-        if (tab[0] >= '0' && tab[0] <= '9') {
-            t = atoi(tab);
-        } else if (!strncasecmp(tab, "vram", 4)) {
-            t = TAB_VIDEO;
-        } else {
-            for (int i = 0; i < NUM_TABS && t < 0; i++)
-                if (!strncasecmp(tab, kTabNames[i], strlen(tab))) t = i;
-        }
-        if (t >= 0 && t < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:t];
-    }
+    const int first = tabFromText(getenv("ASTRO_DEBUGGER_TAB"));
+    if (first >= 0 && first < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:first];
     _tabs.delegate = self;
     [self updateHelpContext];
 
-    NSStackView *root = vstack(@[toolbar, _tabs]);
+    /* the registers sit under every tab */
+    NSView *strip = [self buildRegStrip];
+    NSStackView *root = vstack(@[toolbar, _tabs, strip]);
     root.edgeInsets = NSEdgeInsetsMake(8, 8, 8, 8);
     [toolbar.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
     [_tabs.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
+    [strip.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
     _window.contentView = root;
     [_window center];
 }
@@ -1036,7 +1210,7 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
         return;
     }
     [self toggleBreakpointAt:(uint16_t)_selected];
-    if ([self currentTab] == TAB_BREAKS) [self refreshBps];
+    if ([self tabVisible:TAB_BREAKS]) [self refreshBps];
 }
 
 - (void)fujiClear:(id)sender
@@ -1155,38 +1329,46 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
         [self message:[NSString stringWithFormat:@"Register: %@", why] console:NO];
     }
     [self refreshCpu];
-    if ([self currentTab] == TAB_DISASM) [self refreshDisasm];
+    if ([self tabVisible:TAB_DISASM]) [self refreshDisasm];
 }
 
 - (void)flagClicked:(NSButton *)sender
 {
-    static const int flagIds[NUM_FLAGS] = { ASTRO_FLAG_S, ASTRO_FLAG_Z, ASTRO_FLAG_H, ASTRO_FLAG_PV, ASTRO_FLAG_N, ASTRO_FLAG_C };
-    if (astrodebug_is_stopped(_dbg))
-        astrodebug_cpu_set(_dbg, flagIds[sender.tag], sender.state == NSControlStateValueOn);
-    else
+    /* S Z Y H X P N C: the bits of F, high to low */
+    static const int flagBits[NUM_FLAGS] = { 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01 };
+    if (sender.tag >= 0 && sender.tag < NUM_FLAGS && astrodebug_is_stopped(_dbg)) {
+        astrodebug_cpu c;
+        astrodebug_cpu_get(_dbg, &c);
+        int f = c.af & 0xFF;
+        if (sender.state == NSControlStateValueOn) f |= flagBits[sender.tag]; else f &= ~flagBits[sender.tag];
+        astrodebug_cpu_set(_dbg, ASTRO_REG_F, f);
+    } else {
         [self message:@"Stop the machine (F5) to edit flags" console:NO];
+    }
     [self refreshCpu];
 }
 
-/* Brings an address's row into the dump (a couple of rows down from the
- * top) and marks it. */
-- (void)showMemAddr:(int)addr
+/* Brings a range into the dump (a couple of rows down from the top) and
+ * highlights it. */
+- (void)showMemLo:(int)lo hi:(int)hi
 {
-    _memBase = (addr & ~0xF) - 2 * 16;
-    _memMark = addr;
+    _memBase = (lo & ~0xF) - 2 * 16;
+    _memHl = YES;
+    _memHlLo = lo;
+    _memHlHi = hi;
     [self refreshMem];
 }
 
 - (void)gotoMem:(id)sender
 {
     (void)sender;
-    NSString *why = nil;
-    const int a = [self resolveAddr:_memGoto.stringValue why:&why];
-    if (a < 0) {
-        [self message:[NSString stringWithFormat:@"Go to %@: %@", _memGoto.stringValue, why] console:NO];
+    uint16_t lo, hi;
+    if (!astrosym_parse_range(_dbg, _memGoto.stringValue.UTF8String, &lo, &hi)) {
+        [self message:[NSString stringWithFormat:@"Go to %@: not an address, label or range", _memGoto.stringValue]
+              console:NO];
         return;
     }
-    [self showMemAddr:a];
+    [self showMemLo:lo hi:hi];
 }
 
 - (void)memPrev:(id)sender { (void)sender; _memBase -= MEM_BYTES; [self refreshMem]; }
@@ -1215,13 +1397,14 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
         astrodebug_write(_dbg, (uint16_t)(a + (int)i - 1), (uint8_t)v);
     }
     _memWrite.stringValue = @"";
-    if (a < _memBase || a >= _memBase + MEM_BYTES) [self showMemAddr:a];
+    if (a < _memBase || a >= _memBase + MEM_BYTES) [self showMemLo:a hi:a];
     else [self refreshMem];
 }
 
 - (void)followToggled:(id)sender
 {
     (void)sender;
+    _scrolledAway = NO;
     [self refreshDisasm];
 }
 
@@ -1243,10 +1426,11 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
 - (void)addBreakpoint:(id)sender
 {
     (void)sender;
-    static const int types[5] = { ASTRODEBUG_BP_EXEC, ASTRODEBUG_BP_READ, ASTRODEBUG_BP_WRITE, ASTRODEBUG_BP_IN,
-                                  ASTRODEBUG_BP_OUT };
+    static const int types[7] = { ASTRODEBUG_BP_EXEC, ASTRODEBUG_BP_READ, ASTRODEBUG_BP_WRITE,
+                                  ASTRODEBUG_BP_READ | ASTRODEBUG_BP_WRITE, ASTRODEBUG_BP_IN, ASTRODEBUG_BP_OUT,
+                                  ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT };
     const NSInteger sel = _bpType.indexOfSelectedItem;
-    const int type = types[sel >= 0 && sel < 5 ? sel : 0];
+    const int type = types[sel >= 0 && sel < 7 ? sel : 0];
     const BOOL port = (type & (ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT)) != 0;
     NSString *what = port ? @"port" : @"address";
     NSString *startText = [_bpStart.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -1299,6 +1483,215 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     [self refreshNow];
 }
 
+- (void)clearHits:(id)sender
+{
+    (void)sender;
+    astrodebug_breakpoint_clear_hits(_dbg);
+    _bpSig = nil;       /* the hit counts redraw */
+    [self refreshNow];
+}
+
+/* ---- watches, search, trace, pop out ---------------------------------------------- */
+
+- (void)addWatch:(id)sender
+{
+    (void)sender;
+    NSString *text = [_wtEntry.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (text.length == 0 || astrowatch_add(text.UTF8String) < 0) {
+        [self message:@"Type an address, label, expression or lo-hi range to watch" console:NO];
+        return;
+    }
+    _wtEntry.stringValue = @"";
+    [self refreshWatches];
+}
+
+/* A Write breakpoint over lo..hi that fires when the value changes. */
+- (void)breakOnChangeLo:(uint16_t)lo hi:(uint16_t)hi
+{
+    char err[256];
+    err[0] = '\0';
+    if (astrodebug_breakpoint_add(_dbg, ASTRODEBUG_BP_WRITE, lo, hi, "value != old", err, (int)sizeof err) < 0) {
+        NSString *e = cstr(err);
+        [self message:e.length ? e : @"The breakpoint was refused" console:NO];
+        return;
+    }
+    [self message:@"Breaking when it changes" console:NO];
+    [self refreshNow];
+}
+
+/* Selects a tab, or raises the window it was popped out into. */
+- (void)showTab:(int)tab
+{
+    if (_popped[tab]) {
+        [_popped[tab] makeKeyAndOrderFront:nil];
+        return;
+    }
+    [_tabs selectTabViewItem:_items[tab]];
+}
+
+- (void)wtMemory:(NSButton *)sender
+{
+    uint16_t lo, hi;
+    if (!astrowatch_range(_dbg, (int)sender.tag, &lo, &hi)) {
+        [self message:@"That watch does not resolve" console:NO];
+        return;
+    }
+    [self showTab:TAB_MEMORY];
+    [self showMemLo:lo hi:hi];
+}
+
+- (void)wtBreak:(NSButton *)sender
+{
+    uint16_t lo, hi;
+    if (!astrowatch_range(_dbg, (int)sender.tag, &lo, &hi)) {
+        [self message:@"That watch does not resolve" console:NO];
+        return;
+    }
+    [self breakOnChangeLo:lo hi:hi];
+}
+
+- (void)wtRemove:(NSButton *)sender
+{
+    astrowatch_remove((int)sender.tag);
+    [self refreshWatches];
+}
+
+- (void)searchBackward:(BOOL)backward
+{
+    uint8_t pat[ASTROSEARCH_MAX], mask = 0xFF;
+    int n = 0, flags = 0;
+    if (!astrosearch_parse((int)_srchKind.indexOfSelectedItem, _srchEntry.stringValue.UTF8String, pat, &n, &mask,
+                           &flags) || n <= 0) {
+        _srchNote.stringValue = @"Type hex bytes (3E 5A) or some text.";
+        return;
+    }
+    if (!astrodebug_is_stopped(_dbg)) {
+        _srchNote.stringValue = @"Stop the machine first.";
+        return;
+    }
+    const uint16_t from = _memHl ? (backward ? (uint16_t)_memHlLo : (uint16_t)(_memHlLo + 1)) : (uint16_t)_memBase;
+    uint16_t found = 0;
+    const int r = astrodebug_search_next(_dbg, pat, n, mask, flags, from, backward ? 1 : 0, &found);
+    if (r < 0) {
+        _srchNote.stringValue = @"Stop the machine first.";
+    } else if (r == 0) {
+        _srchNote.stringValue = @"Not found.";
+    } else {
+        _srchNote.stringValue = [NSString stringWithFormat:@"Found at $%04X", found];
+        [self showMemLo:found hi:found + n - 1];
+    }
+}
+
+- (void)searchNext:(id)sender { (void)sender; [self searchBackward:NO]; }
+- (void)searchPrev:(id)sender { (void)sender; [self searchBackward:YES]; }
+
+/* Both Record buttons follow the engine's one recorder. */
+- (void)syncRecord:(BOOL)on
+{
+    for (int k = 0; k < 2; k++) {
+        const NSInteger want = on ? NSControlStateValueOn : NSControlStateValueOff;
+        if (_hRec[k].state != want) {
+            _hRec[k].state = want;
+            setButtonAccent(_hRec[k], on);
+        }
+    }
+}
+
+- (void)histRec:(NSButton *)sender
+{
+    astrodebug_trace_enable(_dbg, sender.state == NSControlStateValueOn);
+    [self syncRecord:astrodebug_trace_enabled(_dbg) != 0];
+    [self refreshTab];
+}
+
+- (void)histChanged:(id)sender
+{
+    (void)sender;
+    [self refreshTab];
+}
+
+- (void)histClear:(id)sender
+{
+    (void)sender;
+    astrodebug_trace_clear(_dbg);
+    [self refreshTab];
+}
+
+- (void)popOutCurrent:(id)sender
+{
+    (void)sender;
+    const NSInteger t = [self currentTab];
+    if (t >= 0) [self popOutTab:(int)t];
+}
+
+/* Moves a tab into a window of its own. One tab always stays. */
+- (void)popOutTab:(int)tab
+{
+    if (tab < 0 || tab >= NUM_TABS || _popped[tab] || _tabs.numberOfTabViewItems <= 1) return;
+    NSTabViewItem *item = _items[tab];
+    NSView *view = item.view;
+    [_tabs removeTabViewItem:item];
+
+    NSWindow *win = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, 820, 580)
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    win.title = [@"Astrocade Debugger - " stringByAppendingString:kTabTitles[tab]];
+    win.releasedWhenClosed = NO;
+    win.delegate = self;
+    NSButton *dockBtn = [self button:@"Dock" action:@selector(dockButton:)];
+    dockBtn.tag = tab;
+    dockBtn.toolTip = @"Put this tab back in the debugger";
+    NSView *root = [[NSView alloc] init];
+    dockBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    view.translatesAutoresizingMaskIntoConstraints = NO;
+    [root addSubview:dockBtn];
+    [root addSubview:view];
+    [dockBtn.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:8].active = YES;
+    [dockBtn.topAnchor constraintEqualToAnchor:root.topAnchor constant:8].active = YES;
+    [view.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:8].active = YES;
+    [view.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-8].active = YES;
+    [view.topAnchor constraintEqualToAnchor:dockBtn.bottomAnchor constant:6].active = YES;
+    [view.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-8].active = YES;
+    win.contentView = root;
+    AstroSetHelpContext(win, [@"debugger/" stringByAppendingString:kHelpTabs[tab]]);
+    _popped[tab] = win;
+    [win center];
+    [win makeKeyAndOrderFront:nil];
+    [self updateHelpContext];
+    [self refreshTab];
+}
+
+- (void)dockButton:(id)sender
+{
+    [self dockTab:(int)((NSButton *)sender).tag];
+}
+
+/* Puts a popped-out tab back where it was in the order. */
+- (void)dockTab:(int)tab
+{
+    if (tab < 0 || tab >= NUM_TABS) return;
+    NSWindow *win = _popped[tab];
+    if (!win) return;
+    NSTabViewItem *item = _items[tab];
+    NSView *view = item.view;
+    int pos = 0;
+    _popped[tab] = nil;
+    win.delegate = nil;
+    [view removeFromSuperview];
+    view.translatesAutoresizingMaskIntoConstraints = YES;     /* the tab view sizes it again */
+    item.view = view;
+    for (int t = 0; t < tab; t++)
+        if (!_popped[t]) pos++;
+    [_tabs insertTabViewItem:item atIndex:pos];
+    [_tabs selectTabViewItem:item];
+    [win orderOut:nil];
+    [self updateHelpContext];
+    [self refreshTab];
+}
+
 /* ---- refreshers ------------------------------------------------------------------ */
 
 /* Everything the window shows, read back now: the status and the visible
@@ -1312,15 +1705,26 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     [self refreshTab];
 }
 
-/* Only the tab on show: the others refresh when they are selected. */
+/* The registers, and each tab on show (the notebook's page and any popped-out
+ * window): the others refresh when they are selected. */
 - (void)refreshTab
 {
-    switch ([self currentTab]) {
-    case TAB_CPU: [self refreshCpu]; [self refreshMem]; break;
+    [self refreshCpu];
+    for (int t = 0; t < NUM_TABS; t++)
+        if ([self tabVisible:t]) [self refreshTabAt:t];
+}
+
+- (void)refreshTabAt:(int)tab
+{
+    switch (tab) {
     case TAB_DISASM: [self refreshDisasm]; break;
-    case TAB_VIDEO: [self refreshVideo]; break;
+    case TAB_MEMORY: [self refreshMem]; break;
     case TAB_BREAKS: [self refreshBps]; break;
-    case TAB_IO: [self refreshIo]; break;
+    case TAB_WATCHES: [self refreshWatches]; break;
+    case TAB_CART: [self refreshCart]; break;
+    case TAB_TRACE: [self refreshHist:0]; break;
+    case TAB_HIST: [self refreshHist:1]; break;
+    case TAB_VIDEO: [self refreshVideo]; break;
     case TAB_FUJINET: [self refreshFujinet:NO]; break;
     default: break;
     }
@@ -1360,7 +1764,7 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     for (int i = 0; i < NUM_REGS; i++)
         if (!_reg[i].currentEditor)         /* never over a field being edited */
             _reg[i].stringValue = [NSString stringWithFormat:(i < 12 ? @"%04X" : (i < 14 ? @"%02X" : @"%d")), vals[i]];
-    const int flags[NUM_FLAGS] = { c.sf, c.zf, c.hf, c.pf, c.nf, c.cf };
+    const int flags[NUM_FLAGS] = { c.sf, c.zf, c.yf, c.hf, c.xf, c.pf, c.nf, c.cf };
     for (int i = 0; i < NUM_FLAGS; i++) _flag[i].state = flags[i] ? NSControlStateValueOn : NSControlStateValueOff;
     _beam.stringValue = [NSString stringWithFormat:@"line %d   frame %u   cycles %llu   WZ $%04X%@", c.line, c.frame,
                          (unsigned long long)c.cycles, c.wz & 0xFFFF, c.halted ? @"   HALT" : @""];
@@ -1374,23 +1778,29 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     memset(data, 0, sizeof data);
     astrodebug_read(_dbg, (uint16_t)_memBase, data, MEM_BYTES);
     NSMutableString *text = [NSMutableString stringWithString:@"      0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F\n"];
-    NSRange mark = NSMakeRange(NSNotFound, 0);
+    NSMutableArray<NSValue *> *marks = [NSMutableArray array];     /* the highlighted bytes' cells */
     for (int row = 0; row < MEM_ROWS; row++) {
         const int base = _memBase + row * 16;
-        const NSUInteger start = text.length;
         [text appendFormat:@"%04X  ", base];
-        for (int col = 0; col < 16; col++)
-            [text appendFormat:(col == 8 ? @" %02X " : @"%02X "), data[row * 16 + col]];
+        for (int col = 0; col < 16; col++) {
+            const int addr = base + col;
+            if (col == 8) [text appendString:@" "];
+            if (_memHl && addr >= _memHlLo && addr <= _memHlHi)
+                [marks addObject:[NSValue valueWithRange:NSMakeRange(text.length, 2)]];
+            [text appendFormat:@"%02X ", data[row * 16 + col]];
+        }
         [text appendString:@" "];
         for (int col = 0; col < 16; col++) {
+            const int addr = base + col;
             const uint8_t c = data[row * 16 + col];
+            if (_memHl && addr >= _memHlLo && addr <= _memHlHi)
+                [marks addObject:[NSValue valueWithRange:NSMakeRange(text.length, 1)]];
             [text appendFormat:@"%c", (c >= 0x20 && c < 0x7F) ? (char)c : '.'];
         }
-        if (_memMark >= base && _memMark < base + 16) mark = NSMakeRange(start, text.length - start);
         [text appendString:@"\n"];
     }
     NSMutableAttributedString *as = [[NSMutableAttributedString alloc] initWithString:text attributes:monoAttrs()];
-    if (mark.location != NSNotFound) [as addAttributes:accentAttrs() range:mark];
+    for (NSValue *v in marks) [as addAttributes:accentAttrs() range:v.rangeValue];
     setStyledText(_mem, as);
 }
 
@@ -1409,15 +1819,16 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     if (n > DISASM_WINDOW) n = DISASM_WINDOW;
     _lineCount = n;
 
-    /* "*> 8033  CD 50 80     LABEL            CALL $8050   ; note": the
+    /* "●> 8033  CD 50 80     LABEL            CALL $8050   ; note": the
      * ranges are the line, its label and its comment, for the colours */
     NSMutableString *text = [NSMutableString string];
     NSRange ranges[DISASM_WINDOW], labels[DISASM_WINDOW], notes[DISASM_WINDOW];
     for (int i = 0; i < n; i++) {
         _lineAddr[i] = lines[i].address;
-        const char gutter = !lines[i].has_breakpoint ? ' ' : (lines[i].breakpoint_enabled ? '*' : 'o');
+        /* a red dot for a breakpoint, a grey ring for a disabled one */
+        NSString *gutter = !lines[i].has_breakpoint ? @" " : (lines[i].breakpoint_enabled ? @"●" : @"○");
         NSString *label = cstr(lines[i].label), *comment = cstr(lines[i].comment);
-        NSMutableString *line = [NSMutableString stringWithFormat:@"%c%c %04X  ", gutter,
+        NSMutableString *line = [NSMutableString stringWithFormat:@"%@%c %04X  ", gutter,
                                  lines[i].is_pc ? '>' : ' ', lines[i].address];
         [line appendString:padTo(cstr(lines[i].bytes), 11)];
         [line appendString:@"  "];
@@ -1511,36 +1922,35 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     if (n < 0) n = 0;
     if (n > MAX_BPS) n = MAX_BPS;
 
+    /* the first line: why it stopped, or that it runs */
+    {
+        char reason[160];
+        int where = -1;
+        reason[0] = '\0';
+        astrodebug_stop_reason(_dbg, reason, (int)sizeof reason, &where);
+        NSString *why = cstr(reason);
+        _bpStop.stringValue = astrodebug_is_stopped(_dbg)
+            ? [NSString stringWithFormat:@"Stopped: %@", why.length ? why : @"stopped"]
+            : @"Running.";
+    }
+
     /* the rows are rebuilt only when something in them changed (a refresh
      * must not eat a click) */
     NSMutableString *sig = [NSMutableString string];
-    for (int i = 0; i < n; i++)
-        [sig appendFormat:@"%d %d %d %d %d %u %@\n", bps[i].id, bps[i].type, bps[i].start, bps[i].end,
-                          bps[i].enabled, bps[i].hits, cstr(bps[i].condition)];
+    NSMutableArray<NSString *> *descs = [NSMutableArray array];
+    for (int i = 0; i < n; i++) {
+        char desc[256];
+        desc[0] = '\0';
+        astrobp_describe(_dbg, &bps[i], desc, (int)sizeof desc);
+        [descs addObject:cstr(desc)];
+        [sig appendFormat:@"%d %d %u %@\n", bps[i].id, bps[i].enabled, bps[i].hits, descs[(NSUInteger)i]];
+    }
     if ([sig isEqualToString:_bpSig]) return;
     _bpSig = sig;
 
     for (NSView *v in [_bpList.arrangedSubviews copy]) [_bpList removeView:v];
     if (n == 0) [_bpList addArrangedSubview:[self label:@"No breakpoints"]];
     for (int i = 0; i < n; i++) {
-        static const struct { int bit; const char *name; } kinds[5] = {
-            { ASTRODEBUG_BP_EXEC, "exec" }, { ASTRODEBUG_BP_READ, "read" }, { ASTRODEBUG_BP_WRITE, "write" },
-            { ASTRODEBUG_BP_IN, "in" }, { ASTRODEBUG_BP_OUT, "out" },
-        };
-        NSMutableString *type = [NSMutableString string];
-        for (int k = 0; k < 5; k++)
-            if (bps[i].type & kinds[k].bit) {
-                if (type.length) [type appendString:@"/"];
-                [type appendFormat:@"%s", kinds[k].name];
-            }
-        const BOOL port = (bps[i].type & (ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT)) != 0;
-        NSMutableString *range = [NSMutableString stringWithFormat:(port ? @"port $%02X" : @"$%04X"), bps[i].start];
-        if (bps[i].end != bps[i].start) [range appendFormat:(port ? @"-$%02X" : @"-$%04X"), bps[i].end];
-        char label[64];
-        label[0] = '\0';
-        if (!port && astrodebug_address_label(_dbg, bps[i].start, label, (int)sizeof label) > 0 && label[0])
-            [range appendFormat:@" %@", cstr(label)];
-
         NSButton *box = [NSButton checkboxWithTitle:[NSString stringWithFormat:@"#%d", bps[i].id]
                                              target:self action:@selector(bpEnabled:)];
         box.state = bps[i].enabled ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1550,8 +1960,7 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
         NSButton *remove = [self button:@"Remove" action:@selector(bpRemove:)];
         remove.tag = bps[i].id;
         [remove.widthAnchor constraintEqualToConstant:70].active = YES;
-        NSStackView *row = hstack(@[box, bpCell(type, 60, NO), bpCell(range, 190, NO),
-                                    bpCell(cstr(bps[i].condition), 0, NO),
+        NSStackView *row = hstack(@[box, bpCell(descs[(NSUInteger)i], 0, NO),
                                     bpCell([NSString stringWithFormat:@"%u", bps[i].hits], 60, NO), remove]);
         row.distribution = NSStackViewDistributionFill;
         [_bpList addArrangedSubview:row];
@@ -1559,24 +1968,132 @@ static NSTextField *bpCell(NSString *text, CGFloat width, BOOL bold)
     }
 }
 
-- (void)refreshIo
+- (void)refreshWatches
 {
-    static char text[8192];
-    astrodebug_memmap map;
-    memset(&map, 0, sizeof map);
-    astrodebug_memmap_get(_dbg, &map);
-    NSMutableString *note = [NSMutableString stringWithFormat:@"BIOS: %@   Cartridge: %@   RAM expansion: ",
-                             cstr(map.bios_name), map.cart_present ? @"present" : @"none"];
-    if (map.exp_bytes > 0)
-        [note appendFormat:@"%@ (%d bytes at $%04X)", cstr(map.exp_name), map.exp_bytes, map.exp_base & 0xFFFF];
-    else
-        [note appendString:@"none"];
-    [note appendFormat:@"   Video mode: %@", map.video_mode ? @"commercial" : @"consumer / low-res"];
-    _mapNote.stringValue = note;
+    const int n = astrowatch_count();
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSMutableString *sig = [NSMutableString string];
+    for (int i = 0; i < n; i++) {
+        char buf[256];
+        buf[0] = '\0';
+        astrowatch_format(_dbg, i, buf, (int)sizeof buf);
+        [lines addObject:cstr(buf)];
+        [sig appendFormat:@"%@\n", lines[(NSUInteger)i]];
+    }
+    [sig appendFormat:@"%u", astrowatch_generation()];
+    if ([sig isEqualToString:_wtSig]) return;      /* a refresh must not eat a click */
+    _wtSig = sig;
 
-    text[0] = '\0';
-    astrodebug_io_state(_dbg, text, (int)sizeof(text));
-    setText(_io, cstr(text), NO);
+    for (NSView *v in [_wtList.arrangedSubviews copy]) [_wtList removeView:v];
+    if (n == 0) [_wtList addArrangedSubview:[self label:@"No watches"]];
+    for (int i = 0; i < n; i++) {
+        NSButton *mem = [self button:@"Memory" action:@selector(wtMemory:)];
+        mem.tag = i;
+        NSButton *brk = [self button:@"Break on change" action:@selector(wtBreak:)];
+        brk.tag = i;
+        NSButton *remove = [self button:@"Remove" action:@selector(wtRemove:)];
+        remove.tag = i;
+        NSStackView *row = hstack(@[bpCell(lines[(NSUInteger)i], 0, NO), mem, brk, remove]);
+        row.distribution = NSStackViewDistributionFill;
+        [_wtList addArrangedSubview:row];
+        [row.widthAnchor constraintEqualToAnchor:_wtList.widthAnchor].active = YES;
+    }
+}
+
+/* The cartridge, the memory map and the data chip's ports. */
+- (void)refreshCart
+{
+    static char io[8192];
+    static astrodebug_region regions[128];
+    astrodebug_cart cart;
+    astrodebug_memmap map;
+    memset(&cart, 0, sizeof cart);
+    memset(&map, 0, sizeof map);
+    astrodebug_cart_info(_dbg, &cart);
+    astrodebug_memmap_get(_dbg, &map);
+
+    NSMutableString *t = [NSMutableString stringWithString:@"Cartridge\n"];
+    if (!cart.present) {
+        [t appendString:@"  none\n"];
+    } else {
+        NSString *path = cstr(cart.path);
+        [t appendFormat:@"  Path      %@\n", path.length ? path : @"(none)"];
+        [t appendFormat:@"  Kind      %@\n", cstr(cart.kind)];
+        [t appendFormat:@"  Image     %u bytes\n", (unsigned)cart.image_bytes];
+        [t appendFormat:@"  Pages     %u (4K)\n", cart.pages];
+        [t appendFormat:@"  Banks     %@ / %@\n", cart.bank[0] >= 0 ? [NSString stringWithFormat:@"%d", cart.bank[0]] : @"-",
+                        cart.bank[1] >= 0 ? [NSString stringWithFormat:@"%d", cart.bank[1]] : @"-"];
+        [t appendFormat:@"  Mailbox   %@\n", cart.mailbox_live ? @"live" : @"dead"];
+        [t appendFormat:@"  Staged    %@\n", cart.staged ? @"yes" : @"no"];
+    }
+    [t appendFormat:@"\nBIOS: %@   RAM expansion: ", cstr(map.bios_name)];
+    if (map.exp_bytes > 0)
+        [t appendFormat:@"%@ (%d bytes at $%04X)", cstr(map.exp_name), map.exp_bytes, map.exp_base & 0xFFFF];
+    else
+        [t appendString:@"none"];
+    [t appendFormat:@"   Video mode: %@\n", map.video_mode ? @"commercial" : @"consumer / low-res"];
+
+    [t appendString:@"\nMemory map\n"];
+    int n = astrodebug_memory_map(_dbg, regions, 128);
+    if (n < 0) n = 0;
+    if (n > 128) n = 128;
+    if (n == 0) [t appendString:@"  (not available)\n"];
+    for (int i = 0; i < n; i++)
+        [t appendFormat:@"  %04X-%04X  %c%c  %@\n", regions[i].lo, regions[i].hi, regions[i].readable ? 'r' : '-',
+                        regions[i].writable ? 'w' : '-', cstr(regions[i].name)];
+
+    io[0] = '\0';
+    astrodebug_io_state(_dbg, io, (int)sizeof(io));
+    [t appendString:@"\nI/O\n"];
+    [t appendString:cstr(io)];
+    setText(_cartText, t, NO);
+}
+
+/* Trace (idx 0) and History (idx 1): the newest HIST_SHOWN lines of the
+ * engine's ring that pass the filter, oldest first. */
+- (void)refreshHist:(int)idx
+{
+    static astrodebug_trace ring[HIST_RING];
+    static int hit[HIST_SHOWN];
+    const BOOL on = astrodebug_trace_enabled(_dbg) != 0;
+    [self syncRecord:on];
+
+    uint16_t lo = 0, hi = 0xFFFF;
+    int filter = ASTRODEBUG_TRACE_ALL;
+    BOOL badRange = NO;
+    switch (_hFilter[idx].indexOfSelectedItem) {
+    case 1: filter = ASTRODEBUG_TRACE_BRANCHES; break;
+    case 2:
+        if (astrosym_parse_range(_dbg, _hRange[idx].stringValue.UTF8String, &lo, &hi)) filter = ASTRODEBUG_TRACE_RANGE;
+        else badRange = YES;
+        break;
+    default: break;
+    }
+    const int total = astrodebug_trace_count(_dbg);
+    /* newest first: unfiltered, only the lines shown are needed */
+    int n = astrodebug_trace_read(_dbg, ring, filter == ASTRODEBUG_TRACE_ALL ? HIST_SHOWN : HIST_RING);
+    if (n < 0) n = 0;
+    int shown = 0;
+    for (int i = 0; i < n && shown < HIST_SHOWN; i++)
+        if (astrodebug_trace_match(&ring[i], filter, lo, hi)) hit[shown++] = i;
+
+    NSMutableString *t = [NSMutableString string];
+    for (int k = shown - 1; k >= 0; k--) {
+        char line[256];
+        line[0] = '\0';
+        astrodebug_trace_format(&ring[hit[k]], line, (int)sizeof line);
+        [t appendString:cstr(line)];
+        [t appendString:@"\n"];
+    }
+    NSString *note;
+    if (!on && total == 0)
+        note = @"recording off";
+    else
+        note = [NSString stringWithFormat:@"%@, %d instructions%@", on ? @"recording" : @"recording off", total,
+                shown < total ? [NSString stringWithFormat:@" (showing %d)", shown] : @""];
+    if (badRange) note = [note stringByAppendingString:@" (range not understood: showing all)"];
+    _hNote[idx].stringValue = note;
+    setText(_hText[idx], t, YES);
 }
 
 /* The log is rebuilt only when it changed: a new packet, or a repeat folded

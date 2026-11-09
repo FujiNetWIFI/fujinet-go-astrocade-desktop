@@ -56,7 +56,7 @@
 #include "z80dasm.h"
 
 #define MAX_BP   128
-#define TRACE_N  4096
+#define TRACE_N  65536
 #define PATH_MAX_ 1024
 
 enum { ACT_RUN = 0, ACT_STEP, ACT_OVER, ACT_OUT, ACT_RUNTO, ACT_SCANLINE,
@@ -92,6 +92,7 @@ struct astrodebug {
     char reason[128];
     int reason_addr;
     unsigned generation;
+    uint64_t stop_serial;       /* bumped by every park */
 
     void (*stop_cb)(void *ud, int kind, uint16_t pc);
     void *stop_ud;
@@ -111,13 +112,15 @@ struct astrodebug {
     /* The expression context (mtx held while evaluating). */
     zregs rs;
     const astro_machine_t *ec;
-    long acc_value, acc_addr;
+    long acc_value, acc_addr, acc_old;
     int in_access;
 
     pthread_mutex_t trace_mtx;
     int trace_on;
-    astrodebug_trace ring[TRACE_N];
+    astrodebug_trace *ring;     /* TRACE_N entries, allocated on first enable */
     int ring_head, ring_count;
+
+    uint8_t shadow[65536];      /* last value seen written, for `old` */
 
     sym_tables syms;
     char cart_path[PATH_MAX_];
@@ -212,7 +215,7 @@ const char *const astrodebug_reg_names[] = {
     "a", "f", "b", "c", "d", "e", "h", "l", "af", "bc", "de", "hl", "ix", "iy",
     "sp", "pc", "i", "r", "im", "iff1", "iff2", "af'", "bc'", "de'", "hl'",
     "cf", "nf", "pf", "hf", "zf", "sf", "yf", "xf", "halted", "line", "frame",
-    "cycles", "value", "addr", NULL,
+    "cycles", "value", "old", "addr", NULL,
 };
 
 static uint8_t expr_read(void *user, uint16_t addr)
@@ -234,10 +237,11 @@ static int expr_name(void *user, const char *name, long *out)
     n[i] = '\0';
     if (name[i]) n[0] = '\0'; /* too long to be a register */
 
-    if (!strcmp(n, "value") || !strcmp(n, "addr")) {
+    if (!strcmp(n, "value") || !strcmp(n, "addr") || !strcmp(n, "old")) {
         if (!d->in_access)
             return 0;
-        *out = n[0] == 'v' ? d->acc_value : d->acc_addr;
+        *out = n[0] == 'v' ? d->acc_value : n[0] == 'o' ? d->acc_old
+                                                         : d->acc_addr;
         return 1;
     }
 #define REG(s, v) if (!strcmp(n, s)) { *out = (v); return 1; }
@@ -339,6 +343,18 @@ static void sync_hooks_locked(astrodebug *d)
     }
 }
 
+/* `old` for a write is the byte before it. The hook runs after the store, so
+ * remember the last value of every watched-for-write address. */
+static void seed_shadow_locked(astrodebug *d)
+{
+    unsigned a;
+    if (!d->m || !d->nwatch)
+        return;
+    for (a = 0; a < 65536; a++)
+        if (d->map_mem[a] & ASTRODEBUG_BP_WRITE)
+            d->shadow[a] = peek_m(d->m, (uint16_t)a);
+}
+
 static void rebuild_locked(astrodebug *d)
 {
     int i;
@@ -368,6 +384,7 @@ static void rebuild_locked(astrodebug *d)
     }
     if (!d->nwatch)
         d->pending = 0;
+    seed_shadow_locked(d);
     sync_hooks_locked(d);
 }
 
@@ -392,6 +409,8 @@ static void trace_record(astrodebug *d, astro_machine_t *m, uint16_t pc)
     astrodebug_trace *t;
     z80d_insn ins;
 
+    if (!d->ring)
+        return;
     decode_m(m, pc, &ins);
     pthread_mutex_lock(&d->trace_mtx);
     t = &d->ring[d->ring_head];
@@ -464,6 +483,11 @@ static void bus_hook(astro_machine_t *m, int kind, uint16_t addr, uint8_t val,
         addr &= 0xFF;
     d->acc_value = val;
     d->acc_addr = addr;
+    d->acc_old = val;
+    if (type == ASTRODEBUG_BP_WRITE) {
+        d->acc_old = d->shadow[addr];
+        d->shadow[addr] = val;
+    }
     d->in_access = 1;
     for (i = 0; i < d->nbp; i++) {
         astrodebug_breakpoint *b = &d->bp[i];
@@ -497,6 +521,7 @@ static int exec_hit_locked(astrodebug *d, uint16_t pc)
         return 0;
     d->acc_addr = pc;
     d->acc_value = peek(d, pc);
+    d->acc_old = d->acc_value;
     d->in_access = 1;
     for (i = 0; i < d->nbp; i++) {
         astrodebug_breakpoint *b = &d->bp[i];
@@ -523,6 +548,7 @@ static void park_locked(astrodebug *d, astro_machine_t *m, const char *reason,
     d->stop_req = 0;
     d->pending = 0;
     d->act = ACT_RUN;
+    d->stop_serial++;
     bump_locked(d);
     pthread_cond_broadcast(&d->evcv);
     cb = d->stop_cb;
@@ -760,6 +786,7 @@ static void release_locked(astrodebug *d, int act)
     d->act = act;
     d->stopped = 0;
     d->stop_req = 0;
+    seed_shadow_locked(d); /* pokes made while parked */
     bump_locked(d);
     pthread_cond_broadcast(&d->cv);
 }
@@ -1134,6 +1161,70 @@ void astrodebug_memmap_get(astrodebug *d, astrodebug_memmap *o)
     pthread_mutex_unlock(&d->mtx);
 }
 
+void astrodebug_cart_info(astrodebug *d, astrodebug_cart *o)
+{
+    memset(o, 0, sizeof *o);
+    snprintf(o->kind, sizeof o->kind, "none");
+    if (!d) return;
+    pthread_mutex_lock(&d->mtx);
+    snprintf(o->path, sizeof o->path, "%s", d->cart_path);
+    if (d->m) {
+        const astro_cart_t *c = &d->m->cart;
+        o->present = 1;
+        o->mailbox_live = c->mailbox_live;
+        o->staged = c->have_staged;
+        o->image_bytes = c->image ? c->image_size : 0;
+        o->pages = c->app_npages;
+        if (c->app_store && c->app_npages) {
+            snprintf(o->kind, sizeof o->kind, "APPBANK");
+        } else if (c->hot_image) {
+            snprintf(o->kind, sizeof o->kind, "%s",
+                     c->hot_mask == 0x3F ? "GAME256" : "GAME512");
+            o->pages = o->image_bytes / 4096;
+        } else {
+            snprintf(o->kind, sizeof o->kind, "FLAT");
+            o->image_bytes = ASTRO_CART_WINDOW;
+        }
+        if (c->bank[0] && c->image)
+            o->bank[0] = (int)((c->bank[0] - c->image) / 4096);
+        else
+            o->bank[0] = -1;
+        if (c->bank[1] && c->image)
+            o->bank[1] = (int)((c->bank[1] - c->image) / 4096);
+        else
+            o->bank[1] = -1;
+    }
+    pthread_mutex_unlock(&d->mtx);
+}
+
+int astrodebug_memory_map(astrodebug *d, astrodebug_region *out, int max)
+{
+    astrodebug_memmap mm;
+    int n = 0;
+#define REG_(l, h, r, w, nm) do { if (n < max) { out[n].lo = (l); \
+        out[n].hi = (h); out[n].readable = (r); out[n].writable = (w); \
+        snprintf(out[n].name, sizeof out[n].name, "%s", nm); n++; } } while (0)
+
+    if (!d || !out || max <= 0) return 0;
+    astrodebug_memmap_get(d, &mm);
+    if (!mm.cart_present) return 0;
+    REG_(0x0000, 0x0FFF, 1, 1, "BIOS (writes: magic function generator)");
+    REG_(0x1000, 0x1FFF, 1, 0, mm.bios_name);
+    REG_(0x2000, 0x3FFF, 1, 0, "Cartridge slot (FujiNet cartridge)");
+    REG_(0x4000, 0x4FFF, 1, 1, "Screen RAM");
+    if (mm.exp_bytes) {
+        unsigned hi = (unsigned)mm.exp_base + (unsigned)mm.exp_bytes - 1;
+        REG_((uint16_t)mm.exp_base, (uint16_t)(hi > 0xFFFF ? 0xFFFF : hi), 1, 1,
+             mm.exp_name);
+        if (hi < 0xFFFF)
+            REG_((uint16_t)(hi + 1), 0xFFFF, 0, 0, "Open bus");
+    } else {
+        REG_(0x5000, 0xFFFF, 0, 0, "Open bus (no expansion RAM)");
+    }
+#undef REG_
+    return n;
+}
+
 /* The data chip's and the custom I/O chip's ports (HVGLIB's names, and
  * machine.c's io_read/io_write for which ports exist). */
 static const char *port_name(uint8_t port, int is_in)
@@ -1202,7 +1293,7 @@ int astrodebug_io_state(astrodebug *d, char *dst, int dstsz)
     PUT("  $0000-$0FFF  %s (writes go to the magic function generator)\n",
         mm.bios_name);
     PUT("  $1000-$1FFF  %s (writes dropped)\n", mm.bios_name);
-    PUT("  $2000-$3FFF  cartridge slot: FujiNet cartridge (reads only)\n");
+    PUT("  $2000-$3FFF  cartridge slot: FujiNet cartridge (reads only; see the Cart tab)\n");
     PUT("  $4000-$4FFF  screen RAM, 4K\n");
     if (mm.exp_bytes)
         PUT("  $%04X-$%04X  expansion RAM: %s\n", mm.exp_base,
@@ -1623,6 +1714,17 @@ int astrodebug_breakpoint_list(astrodebug *d, astrodebug_breakpoint *out, int ma
     return n;
 }
 
+void astrodebug_breakpoint_clear_hits(astrodebug *d)
+{
+    int i;
+    if (!d) return;
+    pthread_mutex_lock(&d->mtx);
+    for (i = 0; i < d->nbp; i++)
+        d->bp[i].hits = 0;
+    bump_locked(d);
+    pthread_mutex_unlock(&d->mtx);
+}
+
 void astrodebug_breakpoint_clear(astrodebug *d)
 {
     if (!d) return;
@@ -1671,6 +1773,14 @@ int astrodebug_breakpoint_toggle(astrodebug *d, uint16_t addr)
 void astrodebug_trace_enable(astrodebug *d, int on)
 {
     if (!d) return;
+    if (on) {
+        pthread_mutex_lock(&d->trace_mtx);
+        if (!d->ring)
+            d->ring = calloc(TRACE_N, sizeof *d->ring);
+        if (!d->ring)
+            on = 0;
+        pthread_mutex_unlock(&d->trace_mtx);
+    }
     pthread_mutex_lock(&d->mtx);
     d->trace_on = on != 0;
     bump_locked(d);
@@ -1687,11 +1797,151 @@ int astrodebug_trace_read(astrodebug *d, astrodebug_trace *out, int max)
     int n, i;
     if (!d) return 0;
     pthread_mutex_lock(&d->trace_mtx);
-    n = d->ring_count < max ? d->ring_count : max;
+    n = !d->ring ? 0 : d->ring_count < max ? d->ring_count : max;
     for (i = 0; i < n; i++)
         out[i] = d->ring[(d->ring_head - 1 - i + TRACE_N) % TRACE_N];
     pthread_mutex_unlock(&d->trace_mtx);
     return n;
+}
+
+uint64_t astrodebug_stop_serial(astrodebug *d)
+{
+    uint64_t v;
+    if (!d) return 0;
+    pthread_mutex_lock(&d->mtx);
+    v = d->stop_serial;
+    pthread_mutex_unlock(&d->mtx);
+    return v;
+}
+
+int astrodebug_trace_count(astrodebug *d)
+{
+    int n;
+    if (!d) return 0;
+    pthread_mutex_lock(&d->trace_mtx);
+    n = d->ring_count;
+    pthread_mutex_unlock(&d->trace_mtx);
+    return n;
+}
+
+int astrodebug_trace_format(const astrodebug_trace *t, char *dst, int dstsz)
+{
+    z80d_insn ins;
+    uint8_t code[4];
+    int i;
+
+    if (!t || !dst || dstsz <= 0) return 0;
+    for (i = 0; i < 4; i++) code[i] = t->bytes[i];
+    z80_disassemble(&ins, t->pc, code);
+    return snprintf(dst, (size_t)dstsz,
+                    "%04X  %-18s AF=%04X BC=%04X DE=%04X HL=%04X SP=%04X",
+                    t->pc, ins.text, t->af, t->bc, t->de, t->hl, t->sp);
+}
+
+int astrodebug_trace_match(const astrodebug_trace *t, int filter, uint16_t lo,
+                           uint16_t hi)
+{
+    z80d_insn ins;
+    uint8_t code[4];
+    int i;
+
+    if (!t) return 0;
+    if (filter == ASTRODEBUG_TRACE_RANGE) {
+        if (lo > hi) { uint16_t x = lo; lo = hi; hi = x; }
+        return t->pc >= lo && t->pc <= hi;
+    }
+    if (filter == ASTRODEBUG_TRACE_BRANCHES) {
+        for (i = 0; i < 4; i++) code[i] = t->bytes[i];
+        z80_disassemble(&ins, t->pc, code);
+        return (ins.flags & (ASTRODASM_JUMP | ASTRODASM_CALL |
+                             ASTRODASM_RET)) != 0;
+    }
+    return 1;
+}
+
+/* ---- memory search ------------------------------------------------------------ */
+
+int astrodebug_search(astrodebug *d, const uint8_t *pat, int n, uint8_t mask,
+                      int flags, uint16_t from, uint16_t to, uint16_t *out,
+                      int max)
+{
+    unsigned a, last;
+    int found = 0, k;
+
+    if (!d || !pat || n <= 0 || !out || max <= 0) return -1;
+    pthread_mutex_lock(&d->mtx);
+    if (!d->m || !d->stopped) {
+        pthread_mutex_unlock(&d->mtx);
+        return -1;
+    }
+    if (from > to) { uint16_t x = from; from = to; to = x; }
+    last = to;
+    for (a = from; a <= last && a + (unsigned)n - 1 <= 0xFFFF && found < max;
+         a++) {
+        for (k = 0; k < n; k++) {
+            uint8_t b = peek_m(d->m, (uint16_t)(a + (unsigned)k));
+            uint8_t p = pat[k];
+            if (flags & ASTRODEBUG_SEARCH_NOCASE) {
+                if (b >= 'a' && b <= 'z') b = (uint8_t)(b - 32);
+                if (p >= 'a' && p <= 'z') p = (uint8_t)(p - 32);
+            }
+            if ((b & mask) != (p & mask))
+                break;
+        }
+        if (k == n)
+            out[found++] = (uint16_t)a;
+    }
+    pthread_mutex_unlock(&d->mtx);
+    return found;
+}
+
+int astrodebug_search_next(astrodebug *d, const uint8_t *pat, int n,
+                           uint8_t mask, int flags, uint16_t from,
+                           int backward, uint16_t *found)
+{
+    uint16_t hit[1];
+    int r;
+
+    if (!found) return -1;
+    if (!backward) {
+        unsigned start = (unsigned)from + 1;
+        if (start <= 0xFFFF) {
+            r = astrodebug_search(d, pat, n, mask, flags, (uint16_t)start,
+                                  0xFFFF, hit, 1);
+            if (r < 0) return -1;
+            if (r > 0) { *found = hit[0]; return 1; }
+        }
+        r = astrodebug_search(d, pat, n, mask, flags, 0, from, hit, 1);
+        if (r <= 0) return r;
+        *found = hit[0];
+        return 1;
+    } else {
+        uint16_t last = 0;
+        int have = 0;
+        uint16_t buf[64];
+        unsigned lo = 0;
+        /* the last match strictly before `from`, else the last overall */
+        for (int pass = 0; pass < 2 && !have; pass++) {
+            unsigned a = pass == 0 ? 0 : (unsigned)from;
+            unsigned end = pass == 0 ? (from ? (unsigned)from - 1 : 0)
+                                     : 0xFFFF;
+            if (pass == 0 && from == 0) continue;
+            lo = a;
+            while (lo <= end) {
+                r = astrodebug_search(d, pat, n, mask, flags, (uint16_t)lo,
+                                      (uint16_t)end, buf, 64);
+                if (r < 0) return -1;
+                if (r == 0) break;
+                last = buf[r - 1];
+                have = 1;
+                if (r < 64) break;
+                lo = (unsigned)buf[r - 1] + 1;
+            }
+        }
+        if (!have) return 0;
+        *found = last;
+        return 1;
+    }
 }
 
 void astrodebug_trace_clear(astrodebug *d)

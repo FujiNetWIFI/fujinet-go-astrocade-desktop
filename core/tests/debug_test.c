@@ -37,6 +37,7 @@ static unsigned alarm(unsigned s) { (void)s; return 0; }
 
 #include "astro_internal.h"
 #include "astrodebug.h"
+#include "astromemtools.h"
 #include "astrovid.h"
 #include "host.h"
 
@@ -397,6 +398,116 @@ int main(int argc, char **argv)
     restart_prog();
     CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8007, "write $4100 = $5A"), "... and it hits");
     astrodebug_breakpoint_clear(D);
+
+    /* `old`: the byte before a write (the hook runs after the store) */
+    astrodebug_write(D, 0x4100, 0x00);
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4100, 0x4100, "value != old", err, sizeof err) > 0,
+          "change-only write watch");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8007, "write $4100 = $5A"),
+          "value != old stops on a change");
+    astrodebug_breakpoint_clear(D);
+    astrodebug_write(D, 0x4100, 0x5A);
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4100, 0x4100, "value != old", err, sizeof err) > 0,
+          "change-only write watch, again");
+    restart_prog();
+    CHECK(GO(astrodebug_run_to(D, 0x8013)) && stopped_at(0x8013, "run to"),
+          "writing the same value is not a change");
+    astrodebug_breakpoint_clear(D);
+    astrodebug_write(D, 0x4100, 0x77);
+    CHECK(astrodebug_breakpoint_add(D, ASTRODEBUG_BP_WRITE, 0x4100, 0x4100, "old == $77", err, sizeof err) > 0,
+          "old is seeded from memory");
+    restart_prog();
+    CHECK(GO(astrodebug_resume(D)) && stopped_at(0x8007, "write $4100 = $5A"), "old == $77 hits");
+    astrodebug_breakpoint_clear(D);
+
+    /* the stop serial moves on every stop */
+    {
+        uint64_t s0 = astrodebug_stop_serial(D);
+        restart_prog();
+        CHECK(GO(astrodebug_step(D)) && astrodebug_stop_serial(D) > s0, "stop serial bumps on a stop");
+    }
+
+    /* ---- memory search (stopped) -------------------------------------------------------------- */
+    {
+        static const uint8_t needle[] = { 0xC0, 0xDE, 0x12 };
+        const uint8_t pat[] = { 0xC0, 0xDE };
+        const uint8_t txt[] = { 'h', 'i' };
+        uint16_t hits[8], at = 0;
+        int r;
+        for (int i = 0; i < 3; i++) {
+            astrodebug_write(D, (uint16_t)(0x9000 + i), needle[i]);
+            astrodebug_write(D, (uint16_t)(0xA000 + i), needle[i]);
+        }
+        astrodebug_write(D, 0xB000, 'H'); astrodebug_write(D, 0xB001, 'I');
+        r = astrodebug_search(D, pat, 2, 0xFF, 0, 0x8800, 0xBFFF, hits, 8);
+        CHECK(r == 2 && hits[0] == 0x9000 && hits[1] == 0xA000, "search finds both");
+        r = astrodebug_search(D, pat, 2, 0xF0, 0, 0x9000, 0x9001, hits, 8);
+        CHECK(r == 1, "search with a mask");
+        r = astrodebug_search(D, txt, 2, 0xFF, 0, 0xB000, 0xB001, hits, 8);
+        CHECK(r == 0, "case matters by default");
+        r = astrodebug_search(D, txt, 2, 0xFF, ASTRODEBUG_SEARCH_NOCASE, 0xB000, 0xB001, hits, 8);
+        CHECK(r == 1 && hits[0] == 0xB000, "NOCASE folds");
+        CHECK(astrodebug_search_next(D, pat, 2, 0xFF, 0, 0x9000, 0, &at) == 1 && at == 0xA000,
+              "search next");
+        CHECK(astrodebug_search_next(D, pat, 2, 0xFF, 0, 0xA000, 0, &at) == 1 && at == 0x9000,
+              "search next wraps");
+        CHECK(astrodebug_search_next(D, pat, 2, 0xFF, 0, 0xA000, 1, &at) == 1 && at == 0x9000,
+              "search previous");
+        CHECK(astrodebug_search_next(D, pat, 2, 0xFF, 0, 0x9000, 1, &at) == 1 && at == 0xA000,
+              "search previous wraps");
+        CHECK(astrodebug_search(D, pat, 2, 0xFF, 0, 0x9000, 0x9000, hits, 8) == 1,
+              "a match may run past `to`");
+    }
+
+    /* ---- range parsing ---------------------------------------------------------------------------- */
+    {
+        uint16_t lo = 0, hi = 0;
+        CHECK(astrosym_parse_range(D, "C000", &lo, &hi) && lo == 0xC000 && hi == 0xC000, "bare hex");
+        CHECK(astrosym_parse_range(D, "$4000-$40FF", &lo, &hi) && lo == 0x4000 && hi == 0x40FF, "lo-hi");
+        CHECK(astrosym_parse_range(D, "8203..8200", &lo, &hi) && lo == 0x8200 && hi == 0x8203, "reversed, dots");
+        CHECK(astrosym_parse_range(D, "$4000+3", &lo, &hi) && lo == 0x4003, "an expression");
+        CHECK(!astrosym_parse_range(D, "nosuchlabel", &lo, &hi), "unknown name");
+    }
+
+    /* ---- cart info and the memory map ---------------------------------------------------------- */
+    {
+        astrodebug_cart ci;
+        astrodebug_region rg[16];
+        int n, i;
+        astrodebug_cart_info(D, &ci);
+        CHECK(ci.present && ci.kind[0] && strcmp(ci.kind, "none") != 0, "cart info");
+        n = astrodebug_memory_map(D, rg, 16);
+        CHECK(n >= 5 && rg[0].lo == 0 && rg[n - 1].hi == 0xFFFF, "memory map covers the space");
+        for (i = 1; i < n; i++)
+            if (rg[i].lo != (uint16_t)(rg[i - 1].hi + 1)) break;
+        CHECK(i == n, "memory map is ordered and gap-free");
+        CHECK(rg[2].lo == 0x2000 && has(rg[2].name, "Cartridge") && !rg[2].writable, "cart region");
+    }
+
+    /* ---- history ring -------------------------------------------------------------------------- */
+    {
+        static astrodebug_trace tr[128];
+        char line[128];
+        int n;
+        CHECK(!astrodebug_trace_enabled(D) && astrodebug_trace_count(D) == 0, "recording is off by default");
+        astrodebug_trace_enable(D, 1);
+        restart_prog();
+        CHECK(GO(astrodebug_run_to(D, 0x8013)) && stopped_at(0x8013, "run to"), "ran with tracing on");
+        n = astrodebug_trace_read(D, tr, 128);
+        CHECK(n >= 8 && astrodebug_trace_count(D) >= 8, "instructions recorded");
+        CHECK(tr[0].pc == 0x8011 || tr[0].pc == 0x8013 || tr[0].pc == 0x8022, "newest entry first");
+        astrodebug_trace_format(&tr[n - 1], line, sizeof line);
+        CHECK(has(line, "8002") && has(line, "OUT ($10),A"), "format shows pc and mnemonic");
+        {
+            int br = 0;
+            for (int i = 0; i < n; i++) br += astrodebug_trace_match(&tr[i], ASTRODEBUG_TRACE_BRANCHES, 0, 0);
+            CHECK(br >= 2, "branch filter finds the CALL and RET");
+        }
+        astrodebug_trace_enable(D, 0);
+        astrodebug_trace_clear(D);
+        CHECK(astrodebug_trace_count(D) == 0, "clear");
+    }
 
     /* ---- beam: scanline / frame ----------------------------------------------------------------- */
     restart_prog();

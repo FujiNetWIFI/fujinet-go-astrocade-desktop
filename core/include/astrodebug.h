@@ -284,6 +284,8 @@ void astrodebug_breakpoint_enable(astrodebug *d, int id, int enabled);
 int  astrodebug_breakpoint_list(astrodebug *d, astrodebug_breakpoint *out,
                                int max);
 void astrodebug_breakpoint_clear(astrodebug *d);
+/* Zero every hit count. */
+void astrodebug_breakpoint_clear_hits(astrodebug *d);
 
 /* ---- the instruction trace ring ---------------------------------------------- */
 /* Records only while attached with tracing on (it needs the exec hook). */
@@ -298,6 +300,52 @@ int  astrodebug_trace_enabled(astrodebug *d);
 /* Newest first; returns entries copied. */
 int  astrodebug_trace_read(astrodebug *d, astrodebug_trace *out, int max);
 void astrodebug_trace_clear(astrodebug *d);
+/* Entries held (the ring keeps the newest 65536). */
+int  astrodebug_trace_count(astrodebug *d);
+/* "8033  LD A,$5A  AF=.... BC=.... DE=.... HL=.... SP=....". Returns the length. */
+int  astrodebug_trace_format(const astrodebug_trace *t, char *dst, int dstsz);
+enum { ASTRODEBUG_TRACE_ALL = 0, ASTRODEBUG_TRACE_BRANCHES, ASTRODEBUG_TRACE_RANGE };
+/* 1 if the entry passes the filter (BRANCHES: jumps, calls, returns;
+ * RANGE: pc in lo..hi). */
+int  astrodebug_trace_match(const astrodebug_trace *t, int filter, uint16_t lo,
+                            uint16_t hi);
+
+/* Bumped by every stop (pause, breakpoint, step); frontends recentre their
+ * views on the PC when it changes. */
+uint64_t astrodebug_stop_serial(astrodebug *d);
+
+/* ---- memory search --------------------------------------------------------- */
+#define ASTRODEBUG_SEARCH_NOCASE 1
+/* Paused only (-1 while running). Finds up to max start addresses in from..to where
+ * (mem & mask) == (pat & mask) for all n bytes. Returns the count. */
+int  astrodebug_search(astrodebug *d, const uint8_t *pat, int n, uint8_t mask,
+                       int flags, uint16_t from, uint16_t to, uint16_t *out,
+                       int max);
+/* The next match after `from` (before it if backward), wrapping once.
+ * Returns 1 and *found, 0 for none, -1 while running. */
+int  astrodebug_search_next(astrodebug *d, const uint8_t *pat, int n,
+                            uint8_t mask, int flags, uint16_t from,
+                            int backward, uint16_t *found);
+
+/* ---- the cartridge and the memory map ------------------------------------- */
+typedef struct {
+    int  present;
+    char path[1024];            /* the cart file the session loaded, or "" */
+    char kind[16];              /* FLAT, GAME256, GAME512, APPBANK, none */
+    uint32_t image_bytes;
+    unsigned pages;             /* 4K pages (GAME/APPBANK) */
+    int  bank[2];               /* 4K page now in each half, -1 if none */
+    int  mailbox_live, staged;
+} astrodebug_cart;
+void astrodebug_cart_info(astrodebug *d, astrodebug_cart *out);
+
+typedef struct {
+    uint16_t lo, hi;
+    int readable, writable;
+    char name[48];
+} astrodebug_region;
+/* Ordered, non-overlapping, covering $0000-$FFFF. Returns the count. */
+int  astrodebug_memory_map(astrodebug *d, astrodebug_region *out, int max);
 
 /* ---- files -------------------------------------------------------------------- */
 /* Save with the path a native file picker supplied. kind: "dis" (the

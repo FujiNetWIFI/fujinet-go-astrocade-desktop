@@ -4,26 +4,31 @@
  * follows the SMS, MSX, Atari 7800 and ADAM KDE debuggers.
  *
  * Tabs, in this order (ASTRO_DEBUGGER_TAB picks the one a window opens on, by
- * index or by name -- 0 console, 1 cpu, 2 disassembly, 3 video, 4 breakpoints,
- * 5 memmap, 6 fujinet -- or by the start of a label): the Console (the
- * engine's command line, with a history and Tab completion), CPU & Memory
- * (registers, flags, a hex dump), the Disassembly (click a line to select it
- * for Run to Cursor; click its left edge, double-click it or press F9 for its
- * breakpoint), the Video chip (the screen, screen RAM and palette
- * pictures and the decoded registers), Breakpoints (execute, read,
- * write, port IN and OUT, with a condition), Memory Map & I/O and FujiNet
- * (the FujiBus packets on the BoIP link). The toolbar carries the stepping
- * controls, symbol loading and Save; the family's keys apply (F5 run/stop,
- * F7 step, F8 step over, Shift+F8 step out, Shift+F7 frame, F9 breakpoint,
- * F12 close).
+ * index or by name -- 0 console, 1 disassembly, 2 memory, 3 breakpoints,
+ * 4 watches, 5 cart, 6 trace, 7 history, 8 video, 9 fujinet -- or by the
+ * start of a label): the Console (the engine's command line, with a history
+ * and Tab completion), the Disassembly (click a line to select it for Run to
+ * Cursor; click its left edge, double-click it or press F9 for its
+ * breakpoint), Memory (a hex dump, Go to a label / address / range, a hex or
+ * text search), Breakpoints (execute, read, write, port IN and OUT, with a
+ * condition), Watches (a value list, Break on change), Cart & I/O (the
+ * cartridge, the memory map, the data chip's ports), Trace and History (the
+ * engine's instruction ring: live, and read at a stop), the Video chip (the
+ * screen, screen RAM and palette pictures and the decoded registers) and
+ * FujiNet (the FujiBus packets on the BoIP link). The registers sit in a
+ * strip under the tabs, on every one of them. Any tab can be popped out
+ * into a window of its own (ASTRO_POPOUT names one at start). The toolbar
+ * carries the stepping controls, symbol loading and Save; the family's keys
+ * apply (F5 run/stop, F7 step, F8 step over, Shift+F8 step out, Shift+F7
+ * frame, F9 breakpoint, F12 close).
  *
  * Showing the window attaches (which stops the machine, as on every
  * sibling); hiding it detaches, which takes the breakpoints out of the core
  * and lets the machine run on.
  *
  * A short timer polls the engine's generation and refreshes the tab showing
- * when it moved; while the machine runs, the live tabs refresh twice a
- * second. The stop callback fires on the emulator thread, so it only counts
+ * when it moved; while the machine runs, the live tabs refresh every
+ * 400 ms. The stop callback fires on the emulator thread, so it only counts
  * stops, which tells the console about one that ended between two polls.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -33,6 +38,11 @@
 #include "DebuggerWindow.h"
 #include "../help/HelpWindow.h"
 
+extern "C" {
+#include "astromemtools.h"
+}
+
+#include <QCloseEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -70,29 +80,39 @@
 #define MEM_ROWS 256            /* 4K of memory, 16 bytes a row */
 #define BP_MAX 256
 #define TRACE_MAX 512
+#define HIST_SHOWN 2000         /* trace lines shown */
+#define RING_MAX 65537
 #define CONSOLE_LINES 5000
+
+static QByteArray hexRange(astrodebug *d, const QString &text);
 
 namespace {
 
-enum { TAB_CONSOLE, TAB_CPU, TAB_DISASM, TAB_VIDEO, TAB_BREAKS, TAB_IO, TAB_FUJINET, TAB_COUNT };
+enum {
+    TAB_CONSOLE, TAB_DISASM, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE, TAB_HISTORY, TAB_VIDEO,
+    TAB_FUJINET, TAB_COUNT
+};
 
-/* The tabs, in order: the names ASTRO_DEBUGGER_TAB takes, and their labels
- * (which it takes too). */
-const struct { const char *name, *label; } kTabs[TAB_COUNT] = {
-    { "console", "Console" }, { "cpu", "CPU & Memory" }, { "disassembly", "Disassembly" },
-    { "video", "Video chip" }, { "breakpoints", "Breakpoints" }, { "memmap", "Memory Map & I/O" },
-    { "fujinet", "FujiNet" },
+/* The tabs, in order: the names ASTRO_DEBUGGER_TAB takes, their labels (which
+ * it takes too), and their Help contexts (astrohelp.h). */
+const struct { const char *name, *label, *help; } kTabs[TAB_COUNT] = {
+    { "console", "Console", "console" },           { "disassembly", "Disassembly", "disassembly" },
+    { "memory", "Memory", "memory" },              { "breakpoints", "Breakpoints", "breakpoints" },
+    { "watches", "Watches", "watches" },           { "cart", "Cart & I/O", "cart" },
+    { "trace", "Trace", "trace" },                 { "history", "History", "history" },
+    { "video", "Video chip", "video" },            { "fujinet", "FujiNet", "fujinet" },
 };
 
 /* The register entries, in the order shown, and the astrodebug_reg each sets.
  * Pairs show four digits, I and R two, IM bare. */
 const struct { const char *name; int id, digits; } kRegs[15] = {
-    { "AF", ASTRO_REG_AF, 4 },   { "BC", ASTRO_REG_BC, 4 },   { "DE", ASTRO_REG_DE, 4 },   { "HL", ASTRO_REG_HL, 4 },
-    { "IX", ASTRO_REG_IX, 4 },   { "IY", ASTRO_REG_IY, 4 },   { "SP", ASTRO_REG_SP, 4 },   { "PC", ASTRO_REG_PC, 4 },
+    { "PC", ASTRO_REG_PC, 4 },   { "SP", ASTRO_REG_SP, 4 },   { "AF", ASTRO_REG_AF, 4 },   { "BC", ASTRO_REG_BC, 4 },
+    { "DE", ASTRO_REG_DE, 4 },   { "HL", ASTRO_REG_HL, 4 },   { "IX", ASTRO_REG_IX, 4 },   { "IY", ASTRO_REG_IY, 4 },
     { "AF'", ASTRO_REG_AF2, 4 }, { "BC'", ASTRO_REG_BC2, 4 }, { "DE'", ASTRO_REG_DE2, 4 }, { "HL'", ASTRO_REG_HL2, 4 },
     { "I", ASTRO_REG_I, 2 },     { "R", ASTRO_REG_R, 2 },     { "IM", ASTRO_REG_IM, 0 },
 };
 
+/* The flags the engine can set; Y and X (bits 5 and 3 of F) it only reads. */
 const struct { const char *name; int id; } kFlags[6] = {
     { "S", ASTRO_FLAG_S }, { "Z", ASTRO_FLAG_Z }, { "H", ASTRO_FLAG_H },
     { "PV", ASTRO_FLAG_PV }, { "N", ASTRO_FLAG_N }, { "C", ASTRO_FLAG_C },
@@ -255,11 +275,12 @@ protected:
 };
 
 /* ASTRO_DEBUGGER_TAB: a page number, or a tab's name or label (any case), or
- * the start of one, or of a word of a label ("map" ...). */
-int tabFromEnv()
+ * the start of one, or of a word of a label ("i/o" ...). */
+int tabFromEnv(const char *var = "ASTRO_DEBUGGER_TAB")
 {
-    const QString tab = qEnvironmentVariable("ASTRO_DEBUGGER_TAB").trimmed();
+    const QString tab = qEnvironmentVariable(var).trimmed();
     if (tab.isEmpty()) return -1;
+    if (tab.compare(QLatin1String("io"), Qt::CaseInsensitive) == 0) return TAB_CART;
     bool isNum = false;
     const int n = tab.toInt(&isNum);
     if (isNum) return n >= 0 && n < TAB_COUNT ? n : -1;
@@ -332,35 +353,58 @@ DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
     root->addWidget(buildToolbar());
     m_tabs = new QTabWidget;
     m_tabs->setUsesScrollButtons(true);
-    QWidget *pages[TAB_COUNT];
-    pages[TAB_CONSOLE] = buildConsole();
-    pages[TAB_CPU] = buildCpu();
-    pages[TAB_DISASM] = buildDisasm();
-    pages[TAB_VIDEO] = buildVideo();
-    pages[TAB_BREAKS] = buildBreaks();
-    pages[TAB_IO] = buildIo();
-    pages[TAB_FUJINET] = buildFujinet();
-    for (int i = 0; i < TAB_COUNT; ++i)
-        m_tabs->addTab(pages[i], QString::fromUtf8(kTabs[i].label).replace(QLatin1Char('&'), QLatin1String("&&")));
+    m_pages[TAB_CONSOLE] = buildConsole();
+    m_pages[TAB_DISASM] = buildDisasm();
+    m_pages[TAB_MEMORY] = buildMemory();
+    m_pages[TAB_BREAKS] = buildBreaks();
+    m_pages[TAB_WATCHES] = buildWatches();
+    m_pages[TAB_CART] = buildCart();
+    m_pages[TAB_TRACE] = buildHist(0);
+    m_pages[TAB_HISTORY] = buildHist(1);
+    m_pages[TAB_VIDEO] = buildVideo();
+    m_pages[TAB_FUJINET] = buildFujinet();
+    for (int i = 0; i < TAB_COUNT; ++i) {
+        /* a page's place in the tab widget is not its identity once tabs move
+         * into windows of their own: each carries its own number */
+        m_pages[i]->setProperty("tab", i);
+        m_tabs->addTab(m_pages[i], QString::fromUtf8(kTabs[i].label).replace(QLatin1Char('&'), QLatin1String("&&")));
+    }
     const int tab = tabFromEnv();
     if (tab >= 0) m_tabs->setCurrentIndex(tab);
     /* Help's contexts (astrohelp.h), one per tab */
-    static const char *const kHelpTabs[] = { "console", "cpu", "disassembly", "video", "breakpoints", "io", "fujinet" };
     auto setHelpContext = [this](int page) {
-        if (page >= 0 && page < (int)(sizeof kHelpTabs / sizeof kHelpTabs[0]))
-            setProperty("astroHelpContext", QStringLiteral("debugger/%1").arg(QLatin1String(kHelpTabs[page])));
+        if (page >= 0 && page < TAB_COUNT)
+            setProperty("astroHelpContext", QStringLiteral("debugger/%1").arg(QLatin1String(kTabs[page].help)));
     };
-    setHelpContext(m_tabs->currentIndex());
+    setHelpContext(currentTab());
     new QShortcut(QKeySequence(Qt::Key_F1), this, [this] { astroHelpFor(this); });
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this, setHelpContext](int page) {
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this, setHelpContext](int) {
+        const int page = currentTab();
         setHelpContext(page);
         if (page == TAB_VIDEO) m_haveSnap = false;
+        if (page == TAB_HISTORY) m_hSeen[1] = -1;
         refreshPage(page, false);
         if (page == TAB_CONSOLE) m_conIn->setFocus();
     });
     root->addWidget(m_tabs, 1);
+    root->addWidget(buildRegs());
     setCentralWidget(central);
     statusBar();
+
+    /* for captures and tests: ASTRO_WATCH adds a watch, ASTRO_WATCH_BREAK a
+     * break-on-change over one, ASTRO_MEM_GOTO shows a range in Memory,
+     * ASTRO_HISTORY records the trace and ASTRO_POPOUT peels a tab off */
+    {
+        const QByteArray wt = qgetenv("ASTRO_WATCH"), wb = qgetenv("ASTRO_WATCH_BREAK"), mg = qgetenv("ASTRO_MEM_GOTO");
+        uint16_t lo, hi;
+        if (!wt.isEmpty()) astrowatch_add(wt.constData());
+        if (!wb.isEmpty() && astrosym_parse_range(m_dbg, wb.constData(), &lo, &hi)) {
+            char err[160] = "";
+            astrodebug_breakpoint_add(m_dbg, ASTRODEBUG_BP_WRITE, lo, hi, "value != old", err, sizeof err);
+        }
+        if (!mg.isEmpty() && astrosym_parse_range(m_dbg, mg.constData(), &lo, &hi)) showInMemory(lo, hi);
+            if (tabFromEnv("ASTRO_POPOUT") >= 0) popOut(tabFromEnv("ASTRO_POPOUT"));
+    }
 
     /* the timer runs only while the window is shown (showEvent/hideEvent) */
     connect(&m_timer, &QTimer::timeout, this, [this] { tick(); });
@@ -369,6 +413,13 @@ DebuggerWindow::DebuggerWindow(astrosession *session, QWidget *parent)
 /* Only at exit, with the main window: the session outlives its windows. */
 DebuggerWindow::~DebuggerWindow()
 {
+    m_closing = true;       /* a peeled-off tab's window goes with the debugger */
+    for (QWidget *&win : m_popped)
+        if (win) {
+            QWidget *w = win;
+            win = nullptr;
+            w->close();
+        }
     if (astrodebug_is_attached(m_dbg)) astrodebug_detach(m_dbg);
 }
 
@@ -433,6 +484,11 @@ QWidget *DebuggerWindow::buildToolbar()
                     [this] { save("regs", QStringLiteral("Registers"), QStringLiteral("registers.txt")); });
     saveBtn->setMenu(menu);
     h->addWidget(saveBtn);
+    auto *pop = new QPushButton(QStringLiteral("Pop Out"));
+    pop->setFocusPolicy(Qt::NoFocus);
+    pop->setToolTip(QStringLiteral("Move the tab that shows into a window of its own; Dock puts it back"));
+    connect(pop, &QPushButton::clicked, this, [this] { popOut(currentTab()); });
+    h->addWidget(pop);
     h->addWidget(astroHelpButton(QString()));
     return bar;
 }
@@ -457,15 +513,19 @@ QWidget *DebuggerWindow::buildConsole()
     return w;
 }
 
-QWidget *DebuggerWindow::buildCpu()
+/* The registers, under the tabs and so on every one of them: the main set
+ * on the first row, the shadow set and the rest on the second (Enter sets
+ * one), then the flags, the interrupt flip-flops and the beam. */
+QWidget *DebuggerWindow::buildRegs()
 {
     auto *w = new QWidget;
     auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(2);
 
-    /* the main set on the first row, the shadow set and the rest on the
-     * second; Enter sets one */
     auto *regs = new QGridLayout;
     regs->setHorizontalSpacing(8);
+    regs->setVerticalSpacing(2);
     for (int i = 0; i < 15; ++i) {
         const int row = i < 8 ? 0 : 1, col = 2 * (i < 8 ? i : i - 8);
         auto *l = new QLabel(QString::fromUtf8(kRegs[i].name));
@@ -482,11 +542,23 @@ QWidget *DebuggerWindow::buildCpu()
     regs->setColumnStretch(16, 1);
     v->addLayout(regs);
 
+    /* S Z Y H X P N C, as in F; Y and X are shown, not set */
     auto *flags = new QHBoxLayout;
-    for (int i = 0; i < 6; ++i) {
-        m_flag[i] = new QCheckBox(QString::fromUtf8(kFlags[i].name));
-        connect(m_flag[i], &QCheckBox::clicked, this, [this, i](bool on) { setFlag(kFlags[i].id, on); });
-        flags->addWidget(m_flag[i]);
+    int ro = 0;
+    for (const char *name : { "S", "Z", "Y", "H", "X", "PV", "N", "C" }) {
+        auto *c = new QCheckBox(QString::fromUtf8(name));
+        int idx = -1;
+        for (int i = 0; i < 6; ++i)
+            if (!strcmp(kFlags[i].name, name)) idx = i;
+        if (idx >= 0) {
+            m_flag[idx] = c;
+            connect(c, &QCheckBox::clicked, this, [this, idx](bool on) { setFlag(kFlags[idx].id, on); });
+        } else {
+            c->setEnabled(false);
+            c->setToolTip(QStringLiteral("An undocumented bit of F: shown, not set"));
+            m_flagRo[ro++] = c;
+        }
+        flags->addWidget(c);
     }
     flags->addSpacing(16);
     for (int i = 0; i < 2; ++i) {
@@ -495,22 +567,29 @@ QWidget *DebuggerWindow::buildCpu()
                 [this, i](bool on) { setFlag(i ? ASTRO_REG_IFF2 : ASTRO_REG_IFF1, on); });
         flags->addWidget(m_iff[i]);
     }
-    flags->addStretch(1);
-    v->addLayout(flags);
-
+    flags->addSpacing(16);
     m_beam = new QLabel;
     setMono(m_beam);
     m_beam->setStyleSheet(kGray);
-    v->addWidget(m_beam);
+    flags->addWidget(m_beam, 1);
+    v->addLayout(flags);
+    return w;
+}
+
+/* The dump, Go to (a label, address or range, which it marks), the 4K paging,
+ * the write control, and the search bar. */
+QWidget *DebuggerWindow::buildMemory()
+{
+    auto *w = new QWidget;
+    auto *v = new QVBoxLayout(w);
 
     v->addWidget(titleLabel(QStringLiteral("Memory (as the CPU sees it through the bank map)")));
     m_mem = monoView();
     v->addWidget(m_mem, 1);
 
-    /* the dump: Go to, a page back or on, and a write */
     auto *nav = new QHBoxLayout;
     nav->addWidget(new QLabel(QStringLiteral("Go to")));
-    m_memGoto = smallEntry(QStringLiteral("$C000 or label"), 16);
+    m_memGoto = smallEntry(QStringLiteral("$C000, label or lo-hi"), 20);
     connect(m_memGoto, &QLineEdit::returnPressed, this, [this] { memGoto(); });
     nav->addWidget(m_memGoto);
     for (int dir = -1; dir <= 1; dir += 2) {
@@ -534,7 +613,35 @@ QWidget *DebuggerWindow::buildCpu()
     nav->addWidget(m_memVal);
     nav->addStretch(1);
     v->addLayout(nav);
+    v->addWidget(buildSearchBar());
     return w;
+}
+
+QWidget *DebuggerWindow::buildSearchBar()
+{
+    auto *bar = new QWidget;
+    auto *row = new QHBoxLayout(bar);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->addWidget(new QLabel(QStringLiteral("Search")));
+    m_srchKind = new QComboBox;
+    m_srchKind->addItems({ QStringLiteral("Hex"), QStringLiteral("Text") });
+    m_srchKind->setToolTip(QStringLiteral("Hex bytes (3E 5A) or text, one byte per character"));
+    row->addWidget(m_srchKind);
+    m_srchEntry = new QLineEdit;
+    setMono(m_srchEntry);
+    m_srchEntry->setPlaceholderText(QStringLiteral("bytes or text to find"));
+    connect(m_srchEntry, &QLineEdit::returnPressed, this, [this] { memSearch(false); });
+    row->addWidget(m_srchEntry, 1);
+    auto *next = new QPushButton(QStringLiteral("Find Next"));
+    auto *prev = new QPushButton(QStringLiteral("Find Previous"));
+    connect(next, &QPushButton::clicked, this, [this] { memSearch(false); });
+    connect(prev, &QPushButton::clicked, this, [this] { memSearch(true); });
+    row->addWidget(next);
+    row->addWidget(prev);
+    m_srchNote = new QLabel;
+    m_srchNote->setStyleSheet(kGray);
+    row->addWidget(m_srchNote);
+    return bar;
 }
 
 QWidget *DebuggerWindow::buildDisasm()
@@ -603,18 +710,22 @@ QWidget *DebuggerWindow::buildBreaks()
     auto *w = new QWidget;
     auto *v = new QVBoxLayout(w);
 
+    m_bpStop = new QLabel;
+    m_bpStop->setStyleSheet(QStringLiteral("font-weight: bold;"));
+    v->addWidget(m_bpStop);
+
     auto *top = new QHBoxLayout;
     top->addWidget(hintLabel(QStringLiteral("Execute stops before the instruction runs; the others after the "
                                             "access. Breakpoints are kept while the debugger is closed, but only "
                                             "act while it is open.")), 1);
     v->addLayout(top);
 
-    m_bpTable = new QTableWidget(0, 6);
-    m_bpTable->setHorizontalHeaderLabels({ QStringLiteral("On"), QStringLiteral("Type"), QStringLiteral("Range"),
-                                           QStringLiteral("Condition"), QStringLiteral("Hits"), QString() });
+    m_bpTable = new QTableWidget(0, 4);
+    m_bpTable->setHorizontalHeaderLabels({ QStringLiteral("On"), QStringLiteral("Breakpoint"), QStringLiteral("Hits"),
+                                           QString() });
     m_bpTable->verticalHeader()->setVisible(false);
     m_bpTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_bpTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_bpTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_bpTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_bpTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_bpTable->setFocusPolicy(Qt::NoFocus);
@@ -629,15 +740,21 @@ QWidget *DebuggerWindow::buildBreaks()
 
     auto *row = new QHBoxLayout;
     m_bpType = new QComboBox;
-    m_bpType->addItems({ QStringLiteral("exec"), QStringLiteral("read"), QStringLiteral("write"),
-                         QStringLiteral("in"), QStringLiteral("out") });
-    m_bpType->setToolTip(QStringLiteral("in and out take a port ($00-$FF)"));
+    m_bpType->addItems({ QStringLiteral("Execute"), QStringLiteral("Read"), QStringLiteral("Write"),
+                         QStringLiteral("Read/Write"), QStringLiteral("Port In"), QStringLiteral("Port Out"),
+                         QStringLiteral("Port In/Out") });
+    m_bpType->setToolTip(QStringLiteral("The port types take a port ($00-$FF)"));
     m_bpStart = smallEntry(QStringLiteral("start ($8000 or label)"), 22);
     m_bpEnd = smallEntry(QStringLiteral("end (optional)"), 16);
     m_bpCond = new QLineEdit;
     m_bpCond->setPlaceholderText(QStringLiteral("condition (optional, e.g. a == 5 && value == $FF)"));
     auto *add = new QPushButton(QStringLiteral("Add"));
     auto *clear = new QPushButton(QStringLiteral("Clear All"));
+    auto *clearHits = new QPushButton(QStringLiteral("Clear Hits"));
+    connect(clearHits, &QPushButton::clicked, this, [this] {
+        astrodebug_breakpoint_clear_hits(m_dbg);
+        resync();
+    });
     connect(add, &QPushButton::clicked, this, [this] { addBreakpoint(); });
     connect(clear, &QPushButton::clicked, this, [this] {
         astrodebug_breakpoint_clear(m_dbg);
@@ -650,6 +767,7 @@ QWidget *DebuggerWindow::buildBreaks()
     row->addWidget(m_bpEnd);
     row->addWidget(m_bpCond, 1);
     row->addWidget(add);
+    row->addWidget(clearHits);
     row->addWidget(clear);
     v->addLayout(row);
 
@@ -660,10 +778,91 @@ QWidget *DebuggerWindow::buildBreaks()
     return w;
 }
 
-QWidget *DebuggerWindow::buildIo()
+QWidget *DebuggerWindow::buildWatches()
+{
+    auto *w = new QWidget;
+    auto *v = new QVBoxLayout(w);
+    auto *row = new QHBoxLayout;
+    row->addWidget(new QLabel(QStringLiteral("Watch")));
+    m_wtEntry = new QLineEdit;
+    setMono(m_wtEntry);
+    m_wtEntry->setPlaceholderText(QStringLiteral("address, label, expression or lo-hi"));
+    connect(m_wtEntry, &QLineEdit::returnPressed, this, [this] { addWatch(); });
+    auto *add = new QPushButton(QStringLiteral("Add"));
+    connect(add, &QPushButton::clicked, this, [this] { addWatch(); });
+    row->addWidget(m_wtEntry, 1);
+    row->addWidget(add);
+    v->addLayout(row);
+
+    m_wtTable = new QTableWidget(0, 2);
+    m_wtTable->setHorizontalHeaderLabels({ QStringLiteral("Watch"), QString() });
+    m_wtTable->verticalHeader()->setVisible(false);
+    m_wtTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_wtTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    m_wtTable->setColumnWidth(1, 350);
+    m_wtTable->verticalHeader()->setDefaultSectionSize(34);
+    m_wtTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_wtTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_wtTable->setFocusPolicy(Qt::NoFocus);
+    v->addWidget(m_wtTable, 1);
+    v->addWidget(hintLabel(QStringLiteral("The values are read at a stop and show - while the machine runs. A watch "
+                                          "is kept as text, so a label that loads later starts resolving. "
+                                          "Break on change stops after a write that alters the value.")));
+    return w;
+}
+
+QWidget *DebuggerWindow::buildCart()
 {
     m_io = monoView();
     return m_io;
+}
+
+/* Trace (idx 0) reads the instruction ring live; History (idx 1) reads it at
+ * a stop. They share the one ring and recorder, so the two Record buttons
+ * follow each other. */
+QWidget *DebuggerWindow::buildHist(int idx)
+{
+    auto *w = new QWidget;
+    auto *v = new QVBoxLayout(w);
+    auto *bar = new QHBoxLayout;
+
+    m_hRec[idx] = new QPushButton(QStringLiteral("Record"));
+    m_hRec[idx]->setCheckable(true);
+    m_hRec[idx]->setFocusPolicy(Qt::NoFocus);
+    m_hRec[idx]->setToolTip(QStringLiteral("Record every instruction the CPU runs (the machine runs a little slower)"));
+    m_hRec[idx]->setStyleSheet(QStringLiteral("QPushButton:checked { background:#b5342c; color:white; }"));
+    fixToggleSize(m_hRec[idx], { QStringLiteral("Record") }, m_hRec[idx]->sizeHint().height());
+    connect(m_hRec[idx], &QPushButton::toggled, this, [this](bool on) {
+        if (m_hSync) return;
+        astrodebug_trace_enable(m_dbg, on);
+        for (int i = 0; i < 2; ++i) refreshHist(i, true);
+    });
+    m_hFilter[idx] = new QComboBox;
+    m_hFilter[idx]->addItems({ QStringLiteral("All instructions"), QStringLiteral("Branches only"),
+                               QStringLiteral("In range") });
+    m_hRange[idx] = new QLineEdit;
+    setMono(m_hRange[idx]);
+    m_hRange[idx]->setPlaceholderText(QStringLiteral("range: lo-hi or a label"));
+    connect(m_hFilter[idx], QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, idx](int) { refreshHist(idx, true); });
+    connect(m_hRange[idx], &QLineEdit::returnPressed, this, [this, idx] { refreshHist(idx, true); });
+    auto *clear = new QPushButton(QStringLiteral("Clear"));
+    connect(clear, &QPushButton::clicked, this, [this] {
+        astrodebug_trace_clear(m_dbg);
+        for (int i = 0; i < 2; ++i) refreshHist(i, true);
+    });
+    m_hNote[idx] = new QLabel;
+    m_hNote[idx]->setStyleSheet(kGray);
+    m_hNote[idx]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    bar->addWidget(m_hRec[idx]);
+    bar->addWidget(m_hFilter[idx]);
+    bar->addWidget(m_hRange[idx], 1);
+    bar->addWidget(clear);
+    bar->addWidget(m_hNote[idx], 1);
+    v->addLayout(bar);
+    m_hText[idx] = monoView();
+    v->addWidget(m_hText[idx], 1);
+    return w;
 }
 
 /* The packets left (a note and Clear over them), the link and counts
@@ -762,6 +961,8 @@ void DebuggerWindow::refreshCpu()
     }
     const int flags[6] = { c.sf, c.zf, c.hf, c.pf, c.nf, c.cf };
     for (int i = 0; i < 6; ++i) m_flag[i]->setChecked(flags[i] != 0);
+    m_flagRo[0]->setChecked(c.yf != 0);
+    m_flagRo[1]->setChecked(c.xf != 0);
     m_iff[0]->setChecked(c.iff1 != 0);
     m_iff[1]->setChecked(c.iff2 != 0);
     m_beam->setText(QStringLiteral("scanline %1   frame %2   %3 T-states   WZ %4%5")
@@ -787,10 +988,17 @@ void DebuggerWindow::refreshMem()
     }
     setText(m_mem, t);
 
-    /* the row Go to found stays marked across refreshes */
+    /* the range Go to or a search found stays marked across refreshes: each
+     * row's bytes in the hex and in the text column */
     QList<QTextEdit::ExtraSelection> sel;
-    if (m_memMark >= m_memTop && m_memMark < m_memTop + MEM_ROWS * 16)
-        sel << lineSelection(m_mem, 1 + (m_memMark - m_memTop) / 16, accentFormat());
+    if (m_hl) {
+        const int lo = qMax((int)m_hlLo, m_memTop), hi = qMin((int)m_hlHi, m_memTop + MEM_ROWS * 16 - 1);
+        for (int row = (lo - m_memTop) / 16; lo <= hi && row <= (hi - m_memTop) / 16; ++row) {
+            const int first = qMax(lo - m_memTop - row * 16, 0), last = qMin(hi - m_memTop - row * 16, 15);
+            sel << spanSelection(m_mem, 1 + row, 7 + first * 3, (last - first) * 3 + 2, accentFormat());
+            sel << spanSelection(m_mem, 1 + row, 7 + 48 + 1 + first, last - first + 1, accentFormat());
+        }
+    }
     m_mem->setExtraSelections(sel);
 }
 
@@ -929,6 +1137,18 @@ void DebuggerWindow::refreshBps()
     static astrodebug_breakpoint bps[BP_MAX];
     const int n = astrodebug_breakpoint_list(m_dbg, bps, BP_MAX);
 
+    if (astrodebug_is_stopped(m_dbg)) {
+        char reason[160];
+        int addr = -1;
+        reason[0] = '\0';
+        astrodebug_stop_reason(m_dbg, reason, sizeof reason, &addr);
+        const QString why = stripControl(reason);
+        m_bpStop->setText(why.isEmpty() || why == QLatin1String("stopped") ? QStringLiteral("Stopped.")
+                                                                           : QStringLiteral("Stopped: ") + why);
+    } else {
+        m_bpStop->setText(QStringLiteral("Running."));
+    }
+
     /* rebuilt only when it changed (each step refreshes), and never while a
      * row's own button is being handled */
     QString sig;
@@ -950,21 +1170,11 @@ void DebuggerWindow::refreshBps()
         on->setData(Qt::UserRole, bps[i].id);
         on->setToolTip(QStringLiteral("Enabled"));
         m_bpTable->setItem(i, 0, on);
-        QStringList type;
-        if (bps[i].type & ASTRODEBUG_BP_EXEC) type << QStringLiteral("exec");
-        if (bps[i].type & ASTRODEBUG_BP_READ) type << QStringLiteral("read");
-        if (bps[i].type & ASTRODEBUG_BP_WRITE) type << QStringLiteral("write");
-        if (bps[i].type & ASTRODEBUG_BP_IN) type << QStringLiteral("in");
-        if (bps[i].type & ASTRODEBUG_BP_OUT) type << QStringLiteral("out");
-        m_bpTable->setItem(i, 1, new QTableWidgetItem(type.join(QLatin1Char('/'))));
-        /* a port range for in/out is two digits */
-        const int digits = (bps[i].type & (ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT)) ? 2 : 4;
-        QString range = QStringLiteral("$") + hx(bps[i].start, digits);
-        if (bps[i].end != bps[i].start) range += QStringLiteral("-$") + hx(bps[i].end, digits);
-        m_bpTable->setItem(i, 2, new QTableWidgetItem(range));
-        m_bpTable->setItem(i, 3, new QTableWidgetItem(stripControl(bps[i].condition)));
-        m_bpTable->setItem(i, 4, new QTableWidgetItem(QString::number(bps[i].hits)));
-        for (int col = 1; col < 5; ++col) m_bpTable->item(i, col)->setFont(mono);
+        char desc[256];
+        astrobp_describe(m_dbg, &bps[i], desc, sizeof desc);
+        m_bpTable->setItem(i, 1, new QTableWidgetItem(stripControl(desc)));
+        m_bpTable->setItem(i, 2, new QTableWidgetItem(QString::number(bps[i].hits)));
+        for (int col = 1; col < 3; ++col) m_bpTable->item(i, col)->setFont(mono);
         auto *rm = new QToolButton;
         rm->setIcon(QIcon::fromTheme(QStringLiteral("edit-delete"), QIcon::fromTheme(QStringLiteral("user-trash"))));
         if (rm->icon().isNull()) rm->setText(QStringLiteral("Remove"));
@@ -975,18 +1185,176 @@ void DebuggerWindow::refreshBps()
             astrodebug_breakpoint_remove(m_dbg, id);
             syncLater();
         });
-        m_bpTable->setCellWidget(i, 5, rm);
+        m_bpTable->setCellWidget(i, 3, rm);
     }
     m_bpFilling = false;
     m_bpEmpty->setVisible(n == 0);
 }
 
-void DebuggerWindow::refreshIo()
+/* The cartridge, the memory map as regions, then the data chip's ports. */
+void DebuggerWindow::refreshCart()
 {
     static char text[8192];
+    static astrodebug_region reg[64];
+    astrodebug_cart cart;
+    QString t;
+
+    astrodebug_cart_info(m_dbg, &cart);
+    t += QStringLiteral("Cartridge\n");
+    t += QStringLiteral("  File     %1\n").arg(cart.present && cart.path[0] ? QString::fromUtf8(cart.path)
+                                                                           : QStringLiteral("(none)"));
+    t += QStringLiteral("  Kind     %1\n").arg(QString::fromUtf8(cart.kind));
+    t += QStringLiteral("  Image    %1 bytes").arg(cart.image_bytes);
+    if (cart.pages) t += QStringLiteral(", %1 4K pages").arg(cart.pages);
+    t += QLatin1Char('\n');
+    if (cart.bank[0] >= 0 || cart.bank[1] >= 0)
+        t += QStringLiteral("  Banks    page %1 / page %2\n").arg(cart.bank[0]).arg(cart.bank[1]);
+    t += QStringLiteral("  Mailbox  %1%2\n").arg(cart.mailbox_live ? QStringLiteral("live") : QStringLiteral("dead"),
+                                                  cart.staged ? QStringLiteral(", staged") : QString());
+
+    t += QStringLiteral("\nMemory map\n");
+    const int n = astrodebug_memory_map(m_dbg, reg, 64);
+    for (int i = 0; i < n; ++i)
+        t += QStringLiteral("  $%1-$%2  %3%4  %5\n").arg(hx(reg[i].lo, 4), hx(reg[i].hi, 4))
+                 .arg(reg[i].readable ? QLatin1Char('r') : QLatin1Char('-'))
+                 .arg(reg[i].writable ? QLatin1Char('w') : QLatin1Char('-'))
+                 .arg(QString::fromUtf8(reg[i].name));
+
     text[0] = '\0';
     astrodebug_io_state(m_dbg, text, sizeof text);
-    setText(m_io, stripControl(text));
+    t += QStringLiteral("\nI/O\n") + stripControl(text);
+    setText(m_io, t);
+}
+
+void DebuggerWindow::addWatch()
+{
+    const QByteArray text = m_wtEntry->text().trimmed().toUtf8();
+    if (text.isEmpty()) return;
+    if (astrowatch_add(text.constData()) < 0) {
+        message(QStringLiteral("The watch list is full"));
+        return;
+    }
+    m_wtEntry->clear();
+    refreshWatches(true);
+}
+
+/* Break on change: stop after a write over the watch that alters a byte. */
+void DebuggerWindow::watchBreak(int index)
+{
+    uint16_t lo, hi;
+    if (!astrowatch_range(m_dbg, index, &lo, &hi)) {
+        message(QStringLiteral("That watch does not resolve yet"));
+        return;
+    }
+    char err[160] = "";
+    if (astrodebug_breakpoint_add(m_dbg, ASTRODEBUG_BP_WRITE, lo, hi, "value != old", err, sizeof err) < 0)
+        message(err[0] ? stripControl(err) : QStringLiteral("The breakpoint could not be added"));
+    else
+        message(QStringLiteral("Breaking when it changes"));
+    resync();
+}
+
+/* One row a watch, its value live (a dash while the machine runs). The rows
+ * are rebuilt when the list changed; otherwise only their text moves. */
+void DebuggerWindow::refreshWatches(bool force)
+{
+    const int n = astrowatch_count();
+    const unsigned gen = astrowatch_generation();
+    QFont mono = m_wtTable->font();
+    mono.setFamily(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::TypeWriter);
+    if (force || gen != m_wtGen || m_wtTable->rowCount() != n) {
+        m_wtGen = gen;
+        m_wtTable->setRowCount(n);
+        for (int i = 0; i < n; ++i) {
+            auto *item = new QTableWidgetItem;
+            item->setFont(mono);
+            m_wtTable->setItem(i, 0, item);
+            auto *box = new QWidget;
+            auto *h = new QHBoxLayout(box);
+            h->setContentsMargins(2, 0, 2, 0);
+            auto *mem = new QPushButton(QStringLiteral("Memory"));
+            mem->setToolTip(QStringLiteral("Show it in the Memory tab"));
+            connect(mem, &QPushButton::clicked, this, [this, i] {
+                uint16_t lo, hi;
+                if (!astrowatch_range(m_dbg, i, &lo, &hi)) {
+                    message(QStringLiteral("That watch does not resolve yet"));
+                    return;
+                }
+                if (m_popped[TAB_MEMORY]) m_popped[TAB_MEMORY]->activateWindow();
+                else m_tabs->setCurrentWidget(m_pages[TAB_MEMORY]);
+                showInMemory(lo, hi);
+            });
+            auto *brk = new QPushButton(QStringLiteral("Break on change"));
+            brk->setToolTip(QStringLiteral("Stop after a write that alters it"));
+            connect(brk, &QPushButton::clicked, this, [this, i] { watchBreak(i); });
+            auto *rm = new QPushButton(QStringLiteral("Remove"));
+            connect(rm, &QPushButton::clicked, this, [this, i] {
+                astrowatch_remove(i);
+                QTimer::singleShot(0, this, [this] { refreshWatches(true); });
+            });
+            for (QPushButton *b : { mem, brk, rm }) {
+                b->setFocusPolicy(Qt::NoFocus);
+                h->addWidget(b);
+            }
+            m_wtTable->setCellWidget(i, 1, box);
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        char line[256];
+        astrowatch_format(m_dbg, i, line, sizeof line);
+        const QString text = stripControl(line);
+        if (m_wtTable->item(i, 0)->text() != text) m_wtTable->item(i, 0)->setText(text);
+    }
+}
+
+/* Trace (live) and History (at a stop): the ring newest first, shown
+ * oldest first, the newest HIST_SHOWN lines that pass the filter. */
+void DebuggerWindow::refreshHist(int idx, bool force)
+{
+    static astrodebug_trace buf[RING_MAX];
+    const bool stopped = astrodebug_is_stopped(m_dbg) != 0;
+    const bool on = astrodebug_trace_enabled(m_dbg) != 0;
+    const int count = astrodebug_trace_count(m_dbg);
+
+    m_hSync = true;                     /* both Record buttons follow the engine */
+    for (int i = 0; i < 2; ++i)
+        if (m_hRec[i]->isChecked() != on) m_hRec[i]->setChecked(on);
+    m_hSync = false;
+
+    if (force) m_hSeen[idx] = -1;
+    /* History reads at a stop (it keeps what it showed while the machine
+     * runs); at a stop neither view rebuilds for the same count */
+    if (idx == 1 && !stopped && m_hSeen[1] >= 0) return;
+    if (stopped && count == m_hSeen[idx]) return;
+    m_hSeen[idx] = count;
+
+    uint16_t lo = 0, hi = 0xFFFF;
+    int filter = ASTRODEBUG_TRACE_ALL;
+    switch (m_hFilter[idx]->currentIndex()) {
+    case 1: filter = ASTRODEBUG_TRACE_BRANCHES; break;
+    case 2:
+        if (astrosym_parse_range(m_dbg, hexRange(m_dbg, m_hRange[idx]->text()).constData(), &lo, &hi))
+            filter = ASTRODEBUG_TRACE_RANGE;
+        break;
+    default: break;
+    }
+    const int n = astrodebug_trace_read(m_dbg, buf, RING_MAX);
+    QList<int> hit;
+    for (int i = 0; i < n && hit.size() < HIST_SHOWN; ++i)
+        if (astrodebug_trace_match(&buf[i], filter, lo, hi)) hit.append(i);
+    QString t;
+    if (!on && n == 0) t = QStringLiteral("Recording is off. Press Record, then let the machine run.");
+    char line[256];
+    for (int k = (int)hit.size() - 1; k >= 0; --k) {
+        astrodebug_trace_format(&buf[hit[k]], line, sizeof line);
+        t += QString::fromUtf8(line);
+        if (k) t += QLatin1Char('\n');
+    }
+    setText(m_hText[idx], t, true);
+    m_hNote[idx]->setText(on ? QStringLiteral("recording, %1 instructions").arg(n)
+                             : n ? QStringLiteral("recording off, %1 instructions").arg(n)
+                                 : QStringLiteral("recording off"));
 }
 
 /* The packet log is rebuilt only when it changed: a new packet, or a
@@ -1033,20 +1401,41 @@ void DebuggerWindow::refreshFujinet(bool force)
 void DebuggerWindow::refreshPage(int page, bool live)
 {
     switch (page) {
-    case TAB_CPU: refreshCpu(); refreshMem(); break;
     case TAB_DISASM: if (!live) refreshDisasm(); break;
+    case TAB_MEMORY: refreshMem(); break;
     case TAB_VIDEO: refreshVideo(); break;
     case TAB_BREAKS: refreshBps(); break;
-    case TAB_IO: refreshIo(); break;
+    case TAB_WATCHES: refreshWatches(false); break;
+    case TAB_CART: refreshCart(); break;
+    case TAB_TRACE: refreshHist(0, false); break;
+    case TAB_HISTORY: if (!live) refreshHist(1, false); break;
     case TAB_FUJINET: refreshFujinet(false); break;
     default: break;
     }
 }
 
+/* The registers show everywhere; then the tab showing and any in a window of
+ * its own. */
 void DebuggerWindow::refreshAll()
 {
     refreshStatus();
-    refreshPage(m_tabs->currentIndex(), false);
+    refreshCpu();
+    refreshPage(currentTab(), false);
+    for (int t = 0; t < TAB_COUNT; ++t)
+        if (m_popped[t]) refreshPage(t, false);
+}
+
+/* A page's number, whichever place it holds in the tab widget now. */
+int DebuggerWindow::currentTab() const
+{
+    QWidget *w = m_tabs->currentWidget();
+    return w ? w->property("tab").toInt() : -1;
+}
+
+/* On screen: the tab widget's page, or a window of its own. */
+bool DebuggerWindow::tabVisible(int tab) const
+{
+    return currentTab() == tab || m_popped[tab] != nullptr;
 }
 
 /* After anything that may have moved the engine: the console notes a new
@@ -1066,6 +1455,16 @@ void DebuggerWindow::resync()
     }
     m_seenStops = stops;
     m_wasStopped = stopped;
+    /* a new stop re-centres the disassembly on the PC, even if it was
+     * scrolled away */
+    const uint64_t serial = astrodebug_stop_serial(m_dbg);
+    if (serial != m_seenSerial) {
+        m_seenSerial = serial;
+        if (stopped) {
+            m_followPc->setChecked(true);
+            m_disasm->verticalScrollBar()->setValue(0);
+        }
+    }
     m_seenGen = astrodebug_generation(m_dbg);
     m_runningTicks = 0;
     refreshAll();
@@ -1093,12 +1492,17 @@ void DebuggerWindow::tick()
     if (!isVisible()) return;
     const unsigned gen = astrodebug_generation(m_dbg);
     const bool stopped = astrodebug_is_stopped(m_dbg) != 0;
-    if (gen != m_seenGen || stopped != m_wasStopped) {
+    if (gen != m_seenGen || stopped != m_wasStopped || astrodebug_stop_serial(m_dbg) != m_seenSerial) {
         resync();
-    } else if (!stopped && ++m_runningTicks >= 5) {
+    } else if (tabVisible(TAB_WATCHES) && astrowatch_generation() != m_wtGen) {
+        refreshWatches(false);          /* the list changed elsewhere (the console) */
+    } else if (!stopped && ++m_runningTicks >= 4) {
         m_runningTicks = 0;
         refreshStatus();
-        refreshPage(m_tabs->currentIndex(), true);
+        refreshCpu();
+        refreshPage(currentTab(), true);
+        for (int t = 0; t < TAB_COUNT; ++t)
+            if (m_popped[t]) refreshPage(t, true);
     }
 }
 
@@ -1295,22 +1699,75 @@ void DebuggerWindow::setFlag(int id, bool on)
     resync();
 }
 
-/* Go to: the dump from just above an address (a number or a label), its row
- * marked and scrolled to. */
-void DebuggerWindow::memGoto()
+/* The entries here take bare digits as hex, so "8200-8203" is a range of
+ * two hex numbers (a label on either side wins). */
+static QByteArray hexRange(astrodebug *d, const QString &text)
 {
-    long a;
-    if (!addressOf(m_memGoto->text(), &a)) {
-        m_memMark = -1;
-        refreshMem();
-        return;
-    }
-    m_memMark = (int)a;
-    m_memTop = qBound(0, (int)((a > 0x100 ? a - 0x100 : 0) & ~0xFL), 0x10000 - MEM_ROWS * 16);
+    static const QRegularExpression range(QStringLiteral("^\\s*([0-9A-Fa-f]+)\\s*(?:-|\\.\\.)\\s*([0-9A-Fa-f]+)\\s*$"));
+    const QRegularExpressionMatch m = range.match(text);
+    if (m.hasMatch() && astrodebug_label_address(d, m.captured(1).toUtf8().constData()) < 0 &&
+        astrodebug_label_address(d, m.captured(2).toUtf8().constData()) < 0)
+        return ("$" + m.captured(1) + "-$" + m.captured(2)).toUtf8();
+    return text.toUtf8();
+}
+
+/* Shows a range in the dump, from just above it, marked and scrolled to. */
+void DebuggerWindow::showInMemory(uint16_t lo, uint16_t hi)
+{
+    m_hl = true;
+    m_hlLo = lo;
+    m_hlHi = hi;
+    m_memTop = qBound(0, (int)((lo > 0x100 ? lo - 0x100 : 0) & ~0xF), 0x10000 - MEM_ROWS * 16);
     refreshMem();
-    const int line = 1 + (m_memMark - m_memTop) / 16;
+    const int line = 1 + (lo - m_memTop) / 16;
     const int shown = m_mem->viewport()->height() / qMax(1, m_mem->fontMetrics().lineSpacing());
     m_mem->verticalScrollBar()->setValue(qMax(0, line - shown * 3 / 10));
+}
+
+/* Go to: a label, an address, an expression or a range (lo-hi), which is
+ * marked. Bare digits are hex, as everywhere in the entries. */
+void DebuggerWindow::memGoto()
+{
+    static const QRegularExpression hexOnly(QStringLiteral("^[0-9A-Fa-f]+$"));
+    const QString text = m_memGoto->text().trimmed();
+    if (text.isEmpty()) return;
+    uint16_t lo, hi;
+    long a;
+    if (hexOnly.match(text).hasMatch() && addressOf(text, &a)) {
+        lo = hi = (uint16_t)a;
+    } else if (!astrosym_parse_range(m_dbg, hexRange(m_dbg, text).constData(), &lo, &hi)) {
+        m_hl = false;
+        refreshMem();
+        message(QStringLiteral("Not an address, label or range: %1").arg(text));
+        return;
+    }
+    showInMemory(lo, hi);
+}
+
+/* Find Next / Previous from the marked range (or the top of the dump); the
+ * hit is marked. */
+void DebuggerWindow::memSearch(bool backward)
+{
+    uint8_t pat[ASTROSEARCH_MAX], mask = 0xFF;
+    int n = 0, flags = 0;
+    if (!astrosearch_parse(m_srchKind->currentIndex(), m_srchEntry->text().toUtf8().constData(), pat, &n, &mask,
+                           &flags) || n <= 0) {
+        m_srchNote->setText(QStringLiteral("Type hex bytes (3E 5A) or some text."));
+        return;
+    }
+    uint16_t from = (uint16_t)m_memTop, found = 0;
+    if (m_hl) from = backward ? m_hlLo : (uint16_t)(m_hlLo + 1);
+    const int r = astrodebug_search_next(m_dbg, pat, n, mask, flags, from, backward ? 1 : 0, &found);
+    if (r < 0) {
+        m_srchNote->setText(QStringLiteral("Stop the machine first"));
+        message(QStringLiteral("Stop the machine first"));
+    } else if (r == 0) {
+        m_srchNote->setText(QStringLiteral("Not found"));
+        message(QStringLiteral("Not found"));
+    } else {
+        m_srchNote->setText(QStringLiteral("Found at $%1").arg(hx(found, 4)));
+        showInMemory(found, (uint16_t)(found + n - 1));
+    }
 }
 
 void DebuggerWindow::memWrite()
@@ -1340,9 +1797,10 @@ void DebuggerWindow::jumpTo()
  * optional; the condition is an expression the engine checks. */
 void DebuggerWindow::addBreakpoint()
 {
-    static const int types[5] = { ASTRODEBUG_BP_EXEC, ASTRODEBUG_BP_READ, ASTRODEBUG_BP_WRITE,
-                                  ASTRODEBUG_BP_IN, ASTRODEBUG_BP_OUT };
-    const int sel = qBound(0, m_bpType->currentIndex(), 4);
+    static const int types[7] = { ASTRODEBUG_BP_EXEC, ASTRODEBUG_BP_READ, ASTRODEBUG_BP_WRITE,
+                                  ASTRODEBUG_BP_READ | ASTRODEBUG_BP_WRITE, ASTRODEBUG_BP_IN, ASTRODEBUG_BP_OUT,
+                                  ASTRODEBUG_BP_IN | ASTRODEBUG_BP_OUT };
+    const int sel = qBound(0, m_bpType->currentIndex(), 6);
     const QString start = m_bpStart->text().trimmed(), end = m_bpEnd->text().trimmed();
     if (start.isEmpty()) return;
     long a, b = 0;
@@ -1395,6 +1853,79 @@ void DebuggerWindow::save(const char *kind, const QString &title, const QString 
     char msg[512] = "";
     astrodebug_save(m_dbg, kind, path.toLocal8Bit().constData(), msg, sizeof msg);
     say(msg[0] ? stripControl(msg) : QStringLiteral("Saved %1").arg(path));
+}
+
+/* ---- tabs in windows of their own ----------------------------------------- */
+
+namespace {
+/* A tab's window: closing it docks the tab again. */
+class PopWindow : public QWidget {
+public:
+    std::function<void()> onClose;
+protected:
+    void closeEvent(QCloseEvent *e) override
+    {
+        if (onClose) onClose();
+        QWidget::closeEvent(e);
+    }
+};
+} // namespace
+
+void DebuggerWindow::popOut(int tab)
+{
+    if (tab < 0 || tab >= TAB_COUNT || m_popped[tab] || m_tabs->count() <= 1) return;     /* one tab always stays */
+    QWidget *page = m_pages[tab];
+    m_tabs->removeTab(m_tabs->indexOf(page));
+
+    auto *win = new PopWindow;
+    win->setAttribute(Qt::WA_DeleteOnClose);
+    win->setObjectName(QStringLiteral("debugger-pop-%1").arg(QLatin1String(kTabs[tab].name)));
+    win->setWindowTitle(QStringLiteral("Astrocade Debugger - %1").arg(QLatin1String(kTabs[tab].label)));
+    win->setProperty("astroHelpContext", QStringLiteral("debugger/%1").arg(QLatin1String(kTabs[tab].help)));
+    auto *layout = new QVBoxLayout(win);
+    auto *bar = new QHBoxLayout;
+    auto *dockBtn = new QPushButton(QStringLiteral("Dock"));
+    dockBtn->setToolTip(QStringLiteral("Put this tab back in the debugger"));
+    bar->addWidget(dockBtn);
+    bar->addStretch(1);
+    bar->addWidget(astroHelpButton(QString()));
+    layout->addLayout(bar);
+    layout->addWidget(page, 1);
+    page->show();
+    win->resize(760, 520);
+    m_popped[tab] = win;
+    static_cast<PopWindow *>(win)->onClose = [this, tab] {
+        if (!m_closing) dock(tab);
+    };
+    connect(dockBtn, &QPushButton::clicked, win, &QWidget::close);
+    /* the stepping keys work in the window too */
+    new QShortcut(QKeySequence(Qt::Key_F1), win, [win] { astroHelpFor(win); });
+    new QShortcut(QKeySequence(Qt::Key_F5), win, [this] { toggleRun(); });
+    new QShortcut(QKeySequence(Qt::Key_F7), win, [this] { stepAnd([this] { astrodebug_step(m_dbg); }); });
+    new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F7), win, [this] { stepAnd([this] { astrodebug_frame(m_dbg, 1); }); });
+    new QShortcut(QKeySequence(Qt::Key_F8), win, [this] { stepAnd([this] { astrodebug_step_over(m_dbg); }); });
+    new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F8), win, [this] { stepAnd([this] { astrodebug_step_out(m_dbg); }); });
+    if (isVisible()) win->show();
+    if (tab == TAB_VIDEO) m_haveSnap = false;
+    if (tab == TAB_HISTORY) m_hSeen[1] = -1;
+    refreshPage(tab, false);
+}
+
+void DebuggerWindow::dock(int tab)
+{
+    QWidget *win = m_popped[tab];
+    if (!win) return;
+    QWidget *page = m_pages[tab];
+    m_popped[tab] = nullptr;
+    int pos = 0;
+    for (int t = 0; t < tab; ++t)       /* back where it was in the order */
+        if (!m_popped[t]) ++pos;
+    page->setParent(nullptr);
+    m_tabs->insertTab(pos, page, QString::fromUtf8(kTabs[tab].label).replace(QLatin1Char('&'), QLatin1String("&&")));
+    m_tabs->setCurrentIndex(pos);
+    if (tab == TAB_VIDEO) m_haveSnap = false;
+    if (tab == TAB_HISTORY) m_hSeen[1] = -1;
+    refreshPage(tab, false);
 }
 
 /* ---- events --------------------------------------------------------------- */
@@ -1488,7 +2019,12 @@ void DebuggerWindow::showEvent(QShowEvent *e)
     QMainWindow::showEvent(e);
     m_timer.start(100);
     if (e->spontaneous()) return;
+    for (QWidget *win : m_popped)
+        if (win) win->show();
     astrodebug_attach(m_dbg);
+    static bool historyOnce = true;     /* ASTRO_HISTORY: record from the first show */
+    if (historyOnce && qEnvironmentVariableIsSet("ASTRO_HISTORY")) astrodebug_trace_enable(m_dbg, 1);
+    historyOnce = false;
     m_wasStopped = false;
     QTimer::singleShot(0, this, [this] {
         if (!isVisible()) return;
@@ -1506,6 +2042,10 @@ void DebuggerWindow::showEvent(QShowEvent *e)
 void DebuggerWindow::hideEvent(QHideEvent *e)
 {
     m_timer.stop();
-    if (!e->spontaneous()) astrodebug_detach(m_dbg);
+    if (!e->spontaneous()) {
+        for (QWidget *win : m_popped)
+            if (win) win->hide();
+        astrodebug_detach(m_dbg);
+    }
     QMainWindow::hideEvent(e);
 }

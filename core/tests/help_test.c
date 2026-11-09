@@ -26,8 +26,9 @@ static const char *const platform_names[] = { "GNOME", "KDE", "Windows", "macOS"
 /* What the frontends' Help buttons and menus open. */
 static const char *const contexts[] = {
     "main", "nobios", "keypad", "fujilog", "prefs/Machine", "prefs/ROMs",
-    "debugger/console", "debugger/cpu", "debugger/disassembly", "debugger/video",
-    "debugger/breakpoints", "debugger/io", "debugger/fujinet",
+    "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/video",
+    "debugger/breakpoints", "debugger/watches", "debugger/cart", "debugger/trace",
+    "debugger/history", "debugger/fujinet",
 };
 
 /* The Preferences pages: what each one has, as the frontends label it. */
@@ -184,11 +185,12 @@ static void
 check_debugger(int p)
 {
     static const char *const words[] = { "Run or Stop", "Step Over", "Step Out", "Frame", "Run to Cursor",
-                                         "Load Symbols", "seven tabs" };
+                                         "Load Symbols", "Pop Out", "ten tabs" };
     static const char *const commands[] = { "step", "over", "out", "run", "stop", "runto", "scanline", "frame",
                                             "break", "bpr", "bpw", "bpin", "bpout", "delete", "enable", "clear",
                                             "print", "regs", "set", "mem", "poke", "vram", "vpoke", "video", "io",
-                                            "map", "fujinet", "label", "labels", "disasm", "trace", "save" };
+                                            "map", "fujinet", "label", "labels", "disasm", "trace", "watch", "unwatch", "find",
+                                            "cart", "save" };
     int t, b;
 
     for (size_t k = 0; k < sizeof words / sizeof *words; k++)

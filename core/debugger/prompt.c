@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "astromemtools.h"
 #include "debugger_internal.h"
 
 typedef struct {
@@ -38,7 +39,8 @@ static const char *const commands[] = {
     "frame", "break", "bp", "bpr", "bpw", "bpin", "bpout", "delete", "enable",
     "disable", "clear", "breaks", "print", "regs", "set", "mem", "dump",
     "poke", "vram", "vpoke", "video", "io", "map", "fujinet", "label", "labels",
-    "symbols", "disasm", "dis", "trace", "save", NULL,
+    "symbols", "disasm", "dis", "trace", "save", "watch", "unwatch", "find",
+    "cart", NULL,
 };
 
 static const char *help_text =
@@ -63,6 +65,9 @@ static const char *help_text =
     "label <addr> <name> | labels [file] (alias symbols)\n"
     "disasm [addr] [n]      (alias dis)\n"
     "trace [on|off|clear|n] record / show the last n instructions\n"
+    "watch [addr|label|lo-hi] | unwatch <n|all>   the watch list\n"
+    "find [hex] <bytes> | find text <string>   search memory (stopped)\n"
+    "cart                   the cartridge image and its banks\n"
     "save <dis|mem|vram|regs> <file>\n"
     "Numbers: $C000 0xC000 C000h 49152 %1010; registers a..l af..iy sp pc\n"
     "i r im iff1 iff2 af' bc' de' hl'; flags cf nf pf hf zf sf yf xf; [addr]\n"
@@ -497,6 +502,62 @@ int astrodebug_command(astrodebug *d, const char *command, char *dst, int dstsz)
                 lines[i].address, lines[i].bytes, lines[i].disasm,
                 lines[i].comment[0] ? "; " : "", lines[i].comment);
         }
+    } else if (!strcmp(cmd, "watch")) {
+        char *f = rest_of(p);
+        if (*f) {
+            if (astrowatch_add(f) < 0)
+                out(&o, "no room for another watch\n");
+        }
+        if (!astrowatch_count())
+            out(&o, "no watches (watch <addr|label|lo-hi>)\n");
+        else {
+            int i;
+            for (i = 0; i < astrowatch_count(); i++) {
+                char t[160];
+                astrowatch_format(d, i, t, sizeof t);
+                out(&o, "%2d  %s\n", i, t);
+            }
+        }
+    } else if (!strcmp(cmd, "unwatch")) {
+        char *t = next_tok(&p);
+        if (t && !strcmp(t, "all"))
+            astrowatch_clear();
+        else if (t && eval(d, &o, t, &v))
+            return o.len;
+        else if (t)
+            astrowatch_remove((int)v);
+        else
+            out(&o, "unwatch <n|all>\n");
+    } else if (!strcmp(cmd, "find")) {
+        char *t = next_tok(&p);
+        int kind = ASTROSEARCH_HEX, n = 0, flags = 0;
+        uint8_t pat[ASTROSEARCH_MAX], mask;
+        uint16_t hit[32];
+        char fbuf[160];
+        int cnt, i;
+        if (t && !strcmp(t, "text")) { kind = ASTROSEARCH_TEXT; t = rest_of(p); }
+        else if (t && !strcmp(t, "hex")) t = rest_of(p);
+        else if (t) {
+            snprintf(fbuf, sizeof fbuf, "%s %s", t, rest_of(p));
+            t = fbuf;
+        }
+        if (!t || !*t || !astrosearch_parse(kind, t, pat, &n, &mask, &flags)) {
+            out(&o, "find [hex] <bytes> | find text <string>\n");
+            return o.len;
+        }
+        cnt = astrodebug_search(d, pat, n, mask, flags, 0, 0xFFFF, hit, 32);
+        if (cnt < 0)
+            out(&o, "stop the machine first\n");
+        else if (!cnt)
+            out(&o, "not found\n");
+        else
+            for (i = 0; i < cnt; i++) out(&o, "$%04X\n", hit[i]);
+    } else if (!strcmp(cmd, "cart")) {
+        astrodebug_cart c;
+        astrodebug_cart_info(d, &c);
+        out(&o, "cartridge %s, %u bytes", c.kind, (unsigned)c.image_bytes);
+        if (c.pages) out(&o, ", %u pages, banks %d/%d", c.pages, c.bank[0], c.bank[1]);
+        out(&o, "\nmailbox %s\n", c.mailbox_live ? "live" : "dead");
     } else if (!strcmp(cmd, "trace")) {
         char *t = next_tok(&p);
         if (t && !strcmp(t, "on")) {

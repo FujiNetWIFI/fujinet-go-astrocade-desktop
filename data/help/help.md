@@ -338,8 +338,10 @@ empty for CONFIG) and `bindings` (the controls that differ from the defaults).
 # Debugger
 
 The Debugger (<kbd>F12</kbd>) stops the console and shows what it is doing.
-It has seven tabs; closing it lets the console go on as it was. Opening it
-stops the machine.
+It has ten tabs, and the registers show under all of them; closing it lets the
+console go on as it was. Opening it stops the machine. **Pop Out** moves any
+tab into a window of its own, and **Dock** (or closing that window) puts it
+back.
 
 | Button | Does |
 |---|---|
@@ -352,6 +354,7 @@ stops the machine.
 | Load Symbols | Reads `.sym`, `.map` and `.noi` files |
 | Save | Saves the disassembly, memory, screen RAM or registers to a file |
 | Help | Opens the topic of the tab that shows |
+| Pop Out | Moves the tab that shows into its own window |
 
 <!-- context: debugger/console -->
 ## Console
@@ -380,22 +383,33 @@ for memory, labels, and C's operators. `help` lists the commands.
 | `label`, `labels`, `symbols` | Name an address; load labels |
 | `disasm`, `dis` | Disassembles |
 | `trace` | The instruction trace |
+| `watch`, `unwatch` | The watch list: `watch score`, `unwatch 0` |
+| `find` | Searches memory for bytes (`find 3E 5A`) or text (`find text HELLO`) |
+| `cart` | The cartridge image and its banks |
 | `save` | Saves state to a file |
-
-<!-- context: debugger/cpu -->
-## CPU and memory
-
-The Z80's registers, flags and the memory view. Edit a value while stopped.
 
 <!-- context: debugger/disassembly -->
 ## Disassembly
 
 The Z80 disassembled at the PC, annotated with any labels you load. The
-current instruction is in the app's accent colour, breakpoints are red (grey
-when disabled). Click a line to select it; double-click, <kbd>F9</kbd> or the
-gutter toggles its breakpoint. **Follow PC** keeps the current line in view.
-Astrocade games run as bytecode the BIOS interprets, so the PC mostly stays in
-the BIOS.
+current instruction is in the app's accent colour and breakpoints are red dots
+(grey when disabled). Click a line to select it; double-click, <kbd>F9</kbd> or
+the gutter toggles its breakpoint. **Follow PC** keeps the current line in
+view, and every stop brings the view back to it, even if you had scrolled
+away. Astrocade games run as bytecode the BIOS interprets, so the PC mostly
+stays in the BIOS.
+
+The registers and flags sit in a strip under the tabs. Edit a value while
+stopped and press <kbd>Enter</kbd>.
+
+<!-- context: debugger/memory -->
+## Memory
+
+The 64K the Z80 sees, 16 bytes to a row. **Go To** takes an address, a label,
+an expression or a range (`$4000-$40FF`, `score..score+3`) and highlights what
+it found. **Poke** writes bytes. The search bar finds hex bytes (`3E 5A`) or
+text (not case-sensitive) with **Find Next** and **Find Previous**, wrapping
+once; the machine has to be stopped.
 
 <!-- context: debugger/video -->
 ## Video chip
@@ -408,13 +422,43 @@ screen RAM as the chip draws it.
 
 Execute breakpoints with conditions, address ranges and hit counts, and memory
 read and write and port in and out watchpoints, each of which can be disabled.
-A port breakpoint takes a port number (0 to 255). **Add** makes one, **Clear
-All** removes them.
+A port breakpoint takes a port number (0 to 255). A condition can use `value`
+and `addr`, and on a write `old`, the byte that was there before: `value != old`
+stops only when a write changes something. The line at the top says why the
+machine last stopped. **Add** makes a breakpoint, **Clear Hits** zeroes the
+counts and **Clear All** removes them.
 
-<!-- context: debugger/io -->
-## Memory map and I/O
+<!-- context: debugger/watches -->
+## Watches
 
-The console's memory map, its I/O ports and the chip registers.
+Things to keep an eye on: type an address, a label, an expression or a range
+and press **Add**. Each shows its value while the machine is stopped (`-` while
+it runs, `?` if it means nothing yet, which a later **Load Symbols** may fix).
+**Memory** shows it in the Memory tab, **Break on Change** stops the machine
+when something writes a different value there, and **Remove** drops it.
+
+<!-- context: debugger/cart -->
+## Cart and I/O
+
+The cartridge: its file, the kind of image (flat 8K, a 256K or 512K game, or an
+app with banked pages), its size, which pages are in the banks and whether the
+FujiNet mailbox is live. Under it the memory map as the console sees it, then
+its I/O ports and the chip registers.
+
+<!-- context: debugger/trace -->
+## Trace
+
+Every instruction the Z80 runs, live. **Record** turns it on (it slows the
+console a little, so it starts off), **Clear** empties it, and the filter
+shows everything, only the jumps, calls and returns, or only a range of
+addresses. Trace and History share one recording.
+
+<!-- context: debugger/history -->
+## History
+
+The same recording, read at a stop: the lead-up to a breakpoint or a pause,
+oldest first, with the registers at each instruction. Turn **Record** on
+before you run to the place you want to look at.
 
 <!-- context: debugger/fujinet -->
 ## FujiNet packets
