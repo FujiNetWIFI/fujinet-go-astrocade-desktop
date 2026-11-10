@@ -1,18 +1,20 @@
 name: Windows
 
-# Native MSYS2/UCRT64. The mingw-w64 cross-compile in cmake/toolchains/
-# mingw-w64.cmake exists because the frontend was developed on Linux and
-# smoke-tested under Wine (see TODO); this workflow is the real native build.
+# Cross-built with MinGW-w64 on the org's self-hosted Linux runners (inside an
+# ubuntu:24.04 container) and tested under Wine: the core, the session layer,
+# the FujiNet runtime, the test suite and the Win32 frontend. There is no
+# Windows runner; this is the same approach fujinet-firmware's CI uses.
 #
-# Builds the native Win32 frontend (frontends/windows) alongside core + the
-# FujiNet runtime + the test suite. The core's FujiNet transport is
-# core/astro/fujitcp_win32.c (Winsock), which needs ws2_32 -- already wired
-# into frontends/windows/CMakeLists.txt and the core CMakeLists.
+# .github/workflows/mingw-deps.sh builds the static dependencies (zlib, expat,
+# MbedTLS, OpenSSL, SDL3) with pinned checksums and writes the CMake toolchain
+# file, cached on the script's hash.
 #
-# WITH_ASTROCADE_ROMS=OFF (the Bally BIOS is not redistributable, so
-# boot_smoke/debug_test/session_test report ctest's skip code 77). WITH_FUJINET
-# is left at its default (ON) to prove the MSYS2 runtime build works here --
-# tools/fujinet/build-fujinet-desktop.sh has the cygpath/MSYS2 handling for it.
+# The FujiNet cartridge's transport (core/sms/fujitcp_host.c) is Winsock on
+# this platform (ws2_32, wired into the core CMakeLists); the core's threads
+# are winpthreads. Not exercised on real Windows, only under Wine.
+#
+# -DWITH_ASTROCADE_ROMS=OFF, as every published build. WITH_FUJINET is left at
+# its default ON to prove the runtime cross-builds here.
 
 on:
   push:
@@ -22,36 +24,56 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    runs-on: [self-hosted, Linux, X64, fujinet-builder]
+    container:
+      image: ubuntu:24.04
+      options: --add-host=host.docker.internal:host-gateway
+    env:
+      WINEPREFIX: /tmp/wine
+      WINEDEBUG: -all
     steps:
+      - name: Install build tools, MinGW-w64 and Wine
+        shell: bash
+        run: |
+          MIRROR=http://mirrors.edge.kernel.org/ubuntu
+          (echo > /dev/tcp/host.docker.internal/3142) 2>/dev/null \
+            && MIRROR=http://host.docker.internal:3142/mirrors.edge.kernel.org/ubuntu
+          sed -i "s|http://[a-z.]*ubuntu.com/ubuntu|$MIRROR|" /etc/apt/sources.list.d/ubuntu.sources
+          apt-get update
+          apt-get install -y --no-install-recommends git curl ca-certificates \
+            build-essential make python3 python3-pip python3-venv python3-jinja2 \
+            python3-yaml cmake ninja-build pkg-config mingw-w64 wine wine64 \
+            xz-utils bzip2 perl
+
       - uses: actions/checkout@v4
+
+      - name: Mark the workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache MinGW dependencies
+        id: mingw-cache
+        uses: actions/cache@v4
         with:
-          submodules: recursive
-          fetch-depth: 1
+          path: ${{ runner.temp }}/mingw
+          key: mingw-deps-${{ hashFiles('.github/workflows/mingw-deps.sh') }}
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            git
-            make
-            patch
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-python
-            mingw-w64-ucrt-x86_64-sdl3
-            mingw-w64-ucrt-x86_64-zlib
+      - name: Build MinGW dependencies
+        if: steps.mingw-cache.outputs.cache-hit != 'true'
+        run: .github/workflows/mingw-deps.sh "$RUNNER_TEMP/mingw"
 
-      - name: Confirm the packaged SDL3 is on the 3.x line
-        run: pacman -Q mingw-w64-ucrt-x86_64-sdl3 | grep -qE ' 3\.[0-9]+\.[0-9]+-'
-
+      # The runtime's own build takes its toolchain from FUJINET_CMAKE_ARGS
+      # (word-split, so no spaces inside a value). GCC rejects two things
+      # clang let through and the firmware builds with -Werror.
       - name: Configure
-        run: cmake -B build -G Ninja -DWITH_ASTROCADE_ROMS=OFF
+        run: |
+          P="$RUNNER_TEMP/mingw"
+          echo "MBEDTLS_ROOT_DIR=$P" >> "$GITHUB_ENV"
+          echo "FUJINET_CMAKE_ARGS=-DCMAKE_TOOLCHAIN_FILE=$P/toolchain.cmake -DCMAKE_PREFIX_PATH=$P -DCMAKE_CROSSCOMPILING_EMULATOR=wine -DCMAKE_C_FLAGS=-Wno-error=stringop-truncation -DCMAKE_CXX_FLAGS=-Wno-error=conversion-null" >> "$GITHUB_ENV"
+          cmake -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$P/toolchain.cmake" \
+            -DCMAKE_PREFIX_PATH="$P" \
+            -DCMAKE_CROSSCOMPILING_EMULATOR=wine \
+            -DWITH_ASTROCADE_ROMS=OFF
 
       - name: Build
         run: cmake --build build
@@ -59,3 +81,8 @@ jobs:
       - name: Test
         working-directory: build
         run: ctest --output-on-failure
+
+      - name: Re-run failed tests verbosely
+        if: failure()
+        working-directory: build
+        run: ctest --rerun-failed --output-on-failure -V || true
