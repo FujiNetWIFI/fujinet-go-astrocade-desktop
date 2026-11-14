@@ -374,6 +374,17 @@
     [AstroControllers toggleForSession:_session];
 }
 
+/* -[NSApplication terminate:] ends in exit(), so [app run] never returns and
+ * main()'s astrosession_free is not reached. Stop the session here, or the
+ * FujiNet runtime and log threads are still joinable when libfujinet's
+ * static std::thread objects are destroyed, and std::terminate aborts. */
+- (void)applicationWillTerminate:(NSNotification *)note
+{
+    (void)note;
+    [_display stop];
+    astrosession_stop(_session);
+}
+
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app
 {
     (void)app;

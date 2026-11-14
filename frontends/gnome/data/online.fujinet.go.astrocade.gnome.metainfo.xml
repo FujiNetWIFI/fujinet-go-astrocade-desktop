@@ -47,6 +47,13 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.10.1" date="2026-11-13">
+      <description>
+        <p>
+          Fixed: the macOS app crashed when quitting (Cmd-Q or closing the window) while FujiNet was running.
+        </p>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-11-09">
       <description>
         <p>
