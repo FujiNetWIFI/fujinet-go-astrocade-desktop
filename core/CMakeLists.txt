@@ -180,6 +180,9 @@ add_library(astro_session STATIC
   src/bindings.c
   src/hid_keys.c
   src/input.c
+  src/controls.c
+  src/overlay.c
+  src/pad_assign.c
   src/audio_sdl.c
   src/gamepad_sdl.c
   src/fujinet_runtime.c
@@ -276,6 +279,31 @@ add_executable(gamepad_test tests/gamepad_test.c)
 target_link_libraries(gamepad_test astro_session)
 target_include_directories(gamepad_test PRIVATE src)
 add_test(NAME gamepad_test COMMAND gamepad_test)
+
+# The remembered pad -> player table: pure, no SDL.
+add_executable(pad_assign_test tests/pad_assign_test.c)
+target_link_libraries(pad_assign_test astro_session)
+target_include_directories(pad_assign_test PRIVATE src)
+add_test(NAME pad_assign_test COMMAND pad_assign_test)
+
+# The on-screen layout and its hit tests.
+add_executable(controls_test tests/controls_test.c)
+target_link_libraries(controls_test astro_session m)
+add_test(NAME controls_test COMMAND controls_test)
+
+# The Bally BASIC overlay: legends, typing sequences, the cartridge CRC.
+add_executable(overlay_test tests/overlay_test.c)
+target_link_libraries(overlay_test astro_session)
+target_include_directories(overlay_test PRIVATE src)
+add_test(NAME overlay_test COMMAND overlay_test)
+
+# The gamepad layer end to end on SDL3 virtual joysticks: four players,
+# assignment, hot-unplug, raw adapters, the knob axis, persistence.
+add_executable(gamepad_layer_test tests/gamepad_layer_test.c)
+target_link_libraries(gamepad_layer_test astro_session SDL3::SDL3)
+target_include_directories(gamepad_layer_test PRIVATE src)
+add_test(NAME gamepad_layer_test COMMAND gamepad_layer_test)
+set_tests_properties(gamepad_layer_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 240)
 
 add_executable(session_test tests/session_test.c)
 target_link_libraries(session_test astro_session)

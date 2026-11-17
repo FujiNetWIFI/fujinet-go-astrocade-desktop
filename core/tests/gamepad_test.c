@@ -20,6 +20,7 @@
 
 #include "astrosession.h"
 #include "gamepad_sdl.h"
+#include "pad_assign.h"
 #include "test_tmpdir.h"
 
 static int failures;
@@ -64,6 +65,64 @@ int main(void)
     CHECK(strcmp(nm, "A") == 0, "button 0 (South) named");
     astrosession_pad_input_name(ASTRO_PAD_AXIS_BASE + 2, nm, sizeof nm);
     CHECK(strcmp(nm, "Right Stick X") == 0, "axis 2 named");
+
+    astrosession_pad_input_name(ASTRO_PAD_BTN_DPAD_UP, nm, sizeof nm);
+    CHECK(strcmp(nm, "D-pad Up") == 0, "the D-pad is named");
+    astrosession_pad_input_name(ASTRO_PAD_BTN_RIGHT_TRIGGER, nm, sizeof nm);
+    CHECK(strcmp(nm, "Right Trigger") == 0, "the trigger buttons are named");
+    astrosession_pad_input_name(ASTRO_PAD_BTN_RAW_BASE + 3, nm, sizeof nm);
+    CHECK(strcmp(nm, "Button 3") == 0, "a raw button is named by its number");
+    astrosession_pad_input_name(ASTRO_PAD_HAT_BASE + 8 + 1, nm, sizeof nm);
+    CHECK(strcmp(nm, "Hat 1 Up-Right") == 0, "a hat position is named");
+    astrosession_pad_input_name(-1, nm, sizeof nm);
+    CHECK(nm[0] == '\0', "no input has no name");
+
+    /* the pure helpers */
+    CHECK(astro_acts_from_dir(ASTRO_DIR_UP | ASTRO_DIR_DOWN) == 0, "up and down cancel");
+    CHECK(astro_acts_from_dir(ASTRO_DIR_UP | ASTRO_DIR_RIGHT) ==
+          ((1u << ASTRO_ACT_UP) | (1u << ASTRO_ACT_RIGHT)), "a diagonal is two actions");
+    {
+        int dir = astro_dir_from_stick(0.4f, 0, 0, ASTRO_STICK_ENTER, ASTRO_STICK_EXIT);
+        CHECK(dir == 0, "0.4 does not engage");
+        dir = astro_dir_from_stick(0.6f, 0, dir, ASTRO_STICK_ENTER, ASTRO_STICK_EXIT);
+        CHECK(dir == ASTRO_DIR_RIGHT, "0.6 engages right");
+        dir = astro_dir_from_stick(0.4f, 0, dir, ASTRO_STICK_ENTER, ASTRO_STICK_EXIT);
+        CHECK(dir == ASTRO_DIR_RIGHT, "0.4 holds it (hysteresis)");
+        dir = astro_dir_from_stick(0.3f, 0, dir, ASTRO_STICK_ENTER, ASTRO_STICK_EXIT);
+        CHECK(dir == 0, "0.3 lets go");
+        dir = astro_dir_from_stick(-0.7f, -0.7f, 0, ASTRO_STICK_ENTER, ASTRO_STICK_EXIT);
+        CHECK(dir == (ASTRO_DIR_LEFT | ASTRO_DIR_UP), "SDL's -y is up: a diagonal is two bits");
+    }
+    {
+        int none[4] = { -1, -1, -1, -1 };
+        CHECK(astro_pad_for_player(none, 3, 0) == 0 && astro_pad_for_player(none, 3, 1) == 1 &&
+              astro_pad_for_player(none, 3, 2) == 2 && astro_pad_for_player(none, 3, 3) == -1,
+              "unassigned pads take players in connection order");
+        int one[4] = { 1, -1, -1, -1 };
+        CHECK(astro_pad_for_player(one, 3, 1) == 0, "an explicit assignment wins its player");
+        CHECK(astro_pad_for_player(one, 3, 0) == 1, "the first unassigned pad plays the first free player");
+        CHECK(astro_pad_for_player(one, 3, 2) == -1, "the second unassigned pad has nobody left to play");
+        int four[4] = { 3, 3, -1, -1 };
+        CHECK(astro_pad_for_player(four, 4, 3) == 0, "two pads on one player: the first wins");
+        CHECK(astro_pad_for_player(four, 4, 0) == 2 && astro_pad_for_player(four, 4, 1) == 3,
+              "the rest are in order");
+    }
+    CHECK(astro_knob_from_axis(-1.0f, 0) == 0 && astro_knob_from_axis(0.0f, 0) == 128 &&
+          astro_knob_from_axis(1.0f, 0) == 255, "a stick axis sweeps the knob -1..1");
+    CHECK(astro_knob_from_axis(0.0f, 1) == 0 && astro_knob_from_axis(1.0f, 1) == 255 &&
+          astro_knob_from_axis(2.0f, 1) == 255, "a trigger sweeps it 0..1, clamped");
+    for (int btn = 0; btn < ASTRO_PAD_BTN_DPAD_RIGHT + 1; btn++) {
+        const int sdl = astro_sdl_button_from_pad(btn);
+        CHECK(sdl >= 0 && astro_pad_button_from_sdl((uint8_t)sdl) == btn, "named buttons round trip SDL");
+    }
+    CHECK(astro_sdl_button_from_pad(ASTRO_PAD_BTN_LEFT_TRIGGER) == -1, "the triggers are not SDL buttons");
+
+    /* nothing connected: the lists are empty and the getters are safe */
+    CHECK(astrosession_gamepad_count(s) == 0 || astrosession_gamepad_count(s) > 0, "count callable");
+    CHECK(astrosession_gamepad_assignment(s, 99) == -1 && astrosession_gamepad_effective_port(s, 99) == -1,
+          "an unknown pad has no assignment");
+    astrosession_gamepad_assign(s, 99, 1);        /* no such pad: ignored */
+    CHECK(astrosession_gamepad_name(s, 99, nm, sizeof nm) == 0, "no name for no pad");
 
     astrosession_free(s);
     char cmd[600];

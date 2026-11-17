@@ -58,6 +58,7 @@ void astrosession_free(astrosession *s)
 {
     if (!s) return;
     astrosession_stop(s);
+    astro_gamepad_stop();       /* a session that never ran a machine may still have pads */
     astrosession_settings_flush(s);
     settings_free_all(s);
     pthread_mutex_destroy(&s->sysact_mtx);
@@ -102,6 +103,7 @@ void astrosession_default_opts(astrosession *s, astrosession_start_opts *opts)
     opts->cart_path = (cart && *cart) ? cart : NULL;
     opts->external_fujinet = astrosession_get_int(s, "fujinet_external", 0);
     opts->boip_connect = astrosession_get_str(s, "fujinet_external_addr", NULL);
+    opts->enable_gamepad = astrosession_get_int(s, "enable_gamepad", 1);
 }
 
 int astrosession_parse_hostport(const char *text, char *host, int hostsz,
@@ -238,6 +240,8 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
             session_set_error(s, "cannot read cartridge %s", opts->cart_path);
             return -1;
         }
+        /* a Bally BASIC interpreter turns the keypad overlay on */
+        overlay_cart_loaded(s, cart, cart_size);
     }
 
     /* Bring FujiNet up first (best-effort) and wait briefly for its BoIP
@@ -285,7 +289,8 @@ int astrosession_start(astrosession *s, const astrosession_start_opts *opts)
 
     astro_input_resync();       /* the machine began with every input at 0 */
     audio_start(s);             /* best-effort; silent if no device */
-    astro_gamepad_start(s);     /* best-effort; no-op without a gamepad */
+    if (opts->enable_gamepad)
+        astro_gamepad_start(s); /* best-effort; no-op without a gamepad */
     s->running = 1;
     return 0;
 }
@@ -300,6 +305,7 @@ void astrosession_stop(astrosession *s)
 {
     if (!s->running)
         return;
+    astro_input_typing_stop();  /* a typed line does not run on into the next machine */
     astro_gamepad_stop();
     audio_stop(s);
     astro_host_stop();
@@ -387,6 +393,7 @@ void astrosession_sysaction_fire(astrosession *s, astrosession_sysaction a)
     switch (a) {
     case ASTROSESSION_SYSACT_RESET_GAME:   astrosession_reset_game(s); break;
     case ASTROSESSION_SYSACT_RESET_CONFIG: astrosession_reset_to_config(s); break;
+    case ASTROSESSION_SYSACT_DEBUG_STOP:   astrodebug_stop(astrodebug_get()); break;
     default: break;
     }
 }

@@ -101,10 +101,12 @@ typedef struct {
                              * one listening at boip_connect instead */
     const char *boip_connect; /* "host:port" of that FujiNet (external only);
                                * NULL/"" = 127.0.0.1:11500 */
+    int enable_gamepad;       /* start the SDL gamepad thread */
 } astrosession_start_opts;
 
 /* Fills *opts from the settings store: bios from "bios" (default ASTRO), exp
- * from "exp" (default NONE), cart_path from the "cart" key (NULL if unset).
+ * from "exp" (default NONE), cart_path from the "cart" key (NULL if unset),
+ * enable_gamepad from "enable_gamepad" (default 1).
  * A frontend applying a machine-option change should re-call this after
  * setting the relevant key, so a new option is read in one place. The
  * returned cart_path points into settings storage owned by s. */
@@ -271,6 +273,7 @@ double astrosession_knob_angle(int value);
 typedef enum {
     ASTROSESSION_SYSACT_RESET_GAME = 0,
     ASTROSESSION_SYSACT_RESET_CONFIG,
+    ASTROSESSION_SYSACT_DEBUG_STOP,   /* break into the debugger at the next instruction */
     ASTROSESSION_SYSACT_COUNT
 } astrosession_sysaction;
 
@@ -282,7 +285,7 @@ unsigned astrosession_sysaction_take(astrosession *s);
 
 /* ---- binding targets ----------------------------------------------------
  * Everything a key, a pad button or a pad axis can drive: the 24 keypad
- * keys, the 2 system actions, then 8 actions for each of the 4 players. */
+ * keys, the 3 system actions, then 8 actions for each of the 4 players. */
 typedef enum {
     ASTRO_ACT_UP = 0, ASTRO_ACT_DOWN, ASTRO_ACT_LEFT, ASTRO_ACT_RIGHT,
     ASTRO_ACT_TRIGGER,
@@ -304,20 +307,32 @@ typedef enum {
  * holds; the machine sees their union, so one source releasing can never
  * cancel another's hold. */
 
-/* The on-screen panel pressing or releasing a target (keypad key or a
- * player's stick/trigger/knob-key). System actions are not pressed this way:
- * use astrosession_sysaction_fire. */
+/* The Controllers window's mouse pressing or releasing a target (keypad key
+ * or a player's stick/trigger/knob-key): the POINTER source. System actions
+ * are not pressed this way: use astrosession_sysaction_fire. */
 void astrosession_press(astrosession *s, int target, int down);
+/* The mouse's whole hold on one player's stick, trigger and knob keys at once
+ * (a drag across the stick's wedges): bit n of act_mask is astro_action n
+ * (UP..KNOB_INC), exactly those are held by the pointer and the rest of that
+ * player's are let go. ASTRO_ACT_KNOB (bit 7) is ignored: use knob_set. */
+void astrosession_pointer_set_player(astrosession *s, int player, unsigned act_mask);
+/* Let go of everything the pointer holds (mouse up, focus lost, window
+ * hidden). The keyboard's and the pads' holds are untouched. */
+void astrosession_pointer_release(astrosession *s);
 /* 1 while any source holds the target (the panel paints it lit). */
 int  astrosession_target_held(astrosession *s, int target);
-/* Release everything the keyboard holds (focus lost). */
+/* Release everything the keyboard holds (focus lost), and stop typing for the
+ * overlay (below). The pointer's and the pads' holds are left alone. */
 void astrosession_release_all(astrosession *s);
 
 /* A key event, as a keysym (below). 1 = the key is bound and was consumed.
  * A key bound to a system action POSTS it: call astrosession_sysaction_drain
  * afterwards, from the UI thread. Call for every press and release; with
  * ctrl_down a press is never consumed (menu accelerators win), but a release
- * always clears what its press set. */
+ * always clears what its press set. F9, F11 and F12 are never bound.
+ * With the Bally BASIC overlay on, a printable key bound to a keypad key is
+ * NOT consumed (0): the frontend then passes the character the key produced
+ * to astrosession_type_char. */
 int  astrosession_input_key(astrosession *s, uint32_t keysym, int down,
                             int ctrl_down);
 /* take + fire everything posted. UI thread only. */
@@ -359,28 +374,165 @@ uint32_t astrosession_keysym_from_macos_keycode(unsigned keycode);
 int astrosession_keysym_name(uint32_t keysym, char *dst, int dstsz);
 
 /* ---- gamepads -------------------------------------------------------------
- * A pad input id is a button (an SDL_GamepadButton index, 0-31) or an axis
- * (ASTRO_PAD_AXIS_BASE + an SDL_GamepadAxis index): LEFTX LEFTY RIGHTX RIGHTY
- * LTRIGGER RTRIGGER. A digital target bound to an axis fires at +50% (so a
- * trigger works as a button); the knob follows an axis absolutely. The D-pad
- * and the left stick always steer the pad's player. Pads take players 0-3 in
- * the order SDL lists them. -1 = none. */
+ * USB and Bluetooth pads, mapped or not (a plain HID adapter is opened as a
+ * raw joystick), drive the four hand controllers. A pad plays the first
+ * player nobody is assigned to, in connection order, unless it is assigned
+ * explicitly. An explicit assignment is remembered (setting "pad_assign": a
+ * pad's GUID, else its name) and applies again when the pad is plugged back in
+ * or the app restarted. Every button goes through the bindings; the left
+ * stick, a raw joystick's first hat and (by default binding) the D-pad steer;
+ * the two triggers are bindable buttons; the knob follows one axis
+ * absolutely.
+ *
+ * A pad INPUT id is a button, in one of three bands, or (for the knob only) an
+ * axis: the named buttons 0..ASTRO_PAD_BTN_COUNT-1, the raw buttons of an
+ * unmapped joystick (64..127: button index + 64), a raw joystick's hat
+ * positions (192..255: hat * 8 + direction), or ASTRO_PAD_AXIS_BASE + an
+ * SDL_GamepadAxis index (LEFTX LEFTY RIGHTX RIGHTY LTRIGGER RTRIGGER), which
+ * only the KNOB target takes. -1 = none. Pad `idx` below is its slot in the
+ * connection order, 0 .. count - 1. */
+typedef enum {
+    ASTRO_PAD_BTN_NONE = -1,
+    ASTRO_PAD_BTN_SOUTH = 0, ASTRO_PAD_BTN_EAST, ASTRO_PAD_BTN_WEST,
+    ASTRO_PAD_BTN_NORTH, ASTRO_PAD_BTN_BACK, ASTRO_PAD_BTN_GUIDE,
+    ASTRO_PAD_BTN_START, ASTRO_PAD_BTN_LEFT_STICK, ASTRO_PAD_BTN_RIGHT_STICK,
+    ASTRO_PAD_BTN_LEFT_SHOULDER, ASTRO_PAD_BTN_RIGHT_SHOULDER,
+    ASTRO_PAD_BTN_DPAD_UP, ASTRO_PAD_BTN_DPAD_DOWN, ASTRO_PAD_BTN_DPAD_LEFT,
+    ASTRO_PAD_BTN_DPAD_RIGHT,
+    ASTRO_PAD_BTN_LEFT_TRIGGER, ASTRO_PAD_BTN_RIGHT_TRIGGER,
+    ASTRO_PAD_BTN_COUNT,
+    ASTRO_PAD_BTN_RAW_BASE = 64, ASTRO_PAD_BTN_RAW_LAST = 127,
+    ASTRO_PAD_HAT_BASE = 192, ASTRO_PAD_HAT_LAST = 255
+} astro_pad_button;
+#define ASTRO_PAD_HAT_DIRS 8
+#define ASTRO_PAD_BTN_IS_NAMED(btn) ((btn) >= 0 && (btn) < ASTRO_PAD_BTN_COUNT)
+#define ASTRO_PAD_BTN_IS_RAW(btn)   ((btn) >= ASTRO_PAD_BTN_RAW_BASE && (btn) <= ASTRO_PAD_BTN_RAW_LAST)
+#define ASTRO_PAD_BTN_IS_HAT(btn)   ((btn) >= ASTRO_PAD_HAT_BASE && (btn) <= ASTRO_PAD_HAT_LAST)
 #define ASTRO_PAD_AXIS_BASE   128
 #define ASTRO_PAD_AXIS_COUNT  6
+#define ASTRO_PAD_IS_AXIS(id) ((id) >= ASTRO_PAD_AXIS_BASE && (id) < ASTRO_PAD_AXIS_BASE + ASTRO_PAD_AXIS_COUNT)
+
+/* "A", "D-pad Up", "Button 3", "Hat 0 Up-Right", "Right Stick X"; returns the
+ * length. */
 int  astrosession_pad_input_name(int id, char *dst, int dstsz);
 int  astrosession_gamepad_count(astrosession *s);
-/* The idx-th connected pad's name and the player it drives (-1 if none). */
+/* Name of connected pad idx into dst; returns its length, or 0. */
 int  astrosession_gamepad_name(astrosession *s, int idx, char *dst, int dstsz);
+/* player: 0..3 for that hand controller, -1 for automatic. Remembered. */
+void astrosession_gamepad_assign(astrosession *s, int idx, int player);
+/* The explicit player (0..3), or -1 for automatic. */
+int  astrosession_gamepad_assignment(astrosession *s, int idx);
+/* The player the pad drives right now (0..3), or -1 for none. */
+int  astrosession_gamepad_effective_port(astrosession *s, int idx);
+/* Bumped on every pad added or removed (and carried across a restart of the
+ * session), so a frontend can refresh its lists and toasts cheaply. */
+unsigned astrosession_gamepad_generation(astrosession *s);
+/* The last hot-plug event as text ("Connected: 8BitDo SN30 Pro (player 1)",
+ * "Disconnected: ..."), for a toast; returns the length, 0 if none yet. */
+int  astrosession_gamepad_last_event(astrosession *s, char *dst, int dstsz);
 
 /* ---- pad-input capture, for the Controllers window's Map mode -------------
  * A frontend arming a remap to a pad input calls _begin, then polls _poll on
  * a UI timer (pad events land on the session's own poll thread); _poll
- * returns 1 with *id set once a button is pressed or an axis deflected past
- * 60%, then disarms. _cancel disarms without capturing. While armed the poll
- * thread records the input instead of injecting it. */
+ * returns 1 with *id set once a button is pressed, then disarms. _cancel
+ * disarms without capturing. While armed every pad button event is swallowed,
+ * so the press that maps a button does not also do what it used to. For the
+ * KNOB target use _begin_axis: it records an axis deflected past 60% instead. */
 void astrosession_gamepad_capture_begin(astrosession *s);
+void astrosession_gamepad_capture_begin_axis(astrosession *s);
 int  astrosession_gamepad_capture_poll(astrosession *s, int *id);
 void astrosession_gamepad_capture_cancel(astrosession *s);
+
+/* ---- the on-screen controllers (controls.c) ----------------------------------
+ * One layout for the four toolkits, and its hit test. Units: a keypad key's
+ * width is 1.0; a toolkit adds its own margin and scale. No colours here. The
+ * console's 24-key keypad sits on top, the four pistol grips (player 1 on the
+ * left) in a row below, and the console's two buttons at the bottom. Entries
+ * are in paint order. Wedges are annular sectors, so their rectangles are only
+ * bounding boxes: paint a wedge as the sector of its STICK disc whose
+ * direction is its act_mask, between half the disc's radius and all of it, and
+ * hit-test with astrosession_controls_hit (exact shapes). */
+#define ASTROSESSION_ACCENT_RGB 0xE8C14Au
+
+typedef enum {
+    ASTRO_CTL_KEY = 0,      /* a keypad key (target = ASTRO_TARGET_KEYPAD + k) */
+    ASTRO_CTL_STICK,        /* a player's stick: the disc (never pressed itself) */
+    ASTRO_CTL_DIRECTION,    /* one of its eight wedges (act_mask = the astro_action bits) */
+    ASTRO_CTL_TRIGGER,      /* the trigger (target = the player's TRIGGER) */
+    ASTRO_CTL_KNOB,         /* the knob's dial (drag: astrosession_knob_from_point) */
+    ASTRO_CTL_SYSBUTTON,    /* RESET GAME / Reset to CONFIG / Stop in Debugger */
+    ASTRO_CTL_OVERLAY,      /* the Bally BASIC overlay card's frame (drawn, never pressed) */
+    ASTRO_CTL_CAPTION       /* text: "Player 1" */
+} astro_control_kind;
+
+typedef struct {
+    int kind;               /* astro_control_kind */
+    const char *label;      /* "7", "Trigger", "Player 1" */
+    int player;             /* 0..3, or -1 for the console */
+    int target;             /* ASTRO_TARGET_*, or -1 (stick, diagonals, knob, overlay, caption) */
+    unsigned act_mask;      /* astro_action bits it drives (wedges) */
+    float xpos, ypos, width, height;   /* layout units, from the top-left */
+} astro_control;
+
+const astro_control *astrosession_controls_layout(int *count, float *width,
+                                                  float *height);
+/* The topmost pressable control under a point (layout units), or -1. */
+int      astrosession_controls_hit(float xpos, float ypos);
+/* The stick's direction bits (astro_action UP/DOWN/LEFT/RIGHT) for a pointer
+ * at (delx, dely) from the disc's centre (+x right, +y toward the player, any
+ * unit) with `radius` the disc's reach: nothing inside a quarter of it, else
+ * one of eight 45-degree sectors. */
+unsigned astrosession_stick_from_vector(float delx, float dely, float radius);
+
+/* ---- the Bally BASIC overlay (overlay.c) ------------------------------------
+ * Bally BASIC (and Astro BASIC) are typed on the 24-key keypad with a printed
+ * overlay card: each key carries several legends, chosen by the shift colour
+ * pressed before it. With the overlay on, the Controllers window paints those
+ * legends on the keys, and the host keyboard types BASIC: a printable
+ * character (astrosession_type_char) becomes the shift key(s) and key that
+ * produce it. While it is on, host keys bound to a keypad key type their
+ * character instead of pressing that key; the stick, trigger, knob and console
+ * bindings are unchanged. The setting is remembered ("overlay_bally_basic");
+ * loading a cartridge whose CRC is a known Bally BASIC dump turns it on. */
+#define ASTRO_OVERLAY_SHIFTS 5
+/* The legend columns, and the shift each needs: a legend in a colour is typed
+ * by tapping the shift key of that colour, then the key. */
+enum { ASTRO_SHIFT_NONE = 0, ASTRO_SHIFT_GREEN, ASTRO_SHIFT_RED, ASTRO_SHIFT_BLUE,
+       ASTRO_SHIFT_WORDS };
+typedef struct {
+    const char *legend[ASTRO_OVERLAY_SHIFTS];   /* by ASTRO_SHIFT_*; NULL prints nothing;
+                                                 * UTF-8 (the divide and multiply signs, arrows) */
+} astro_overlay_key;
+/* The legends of the 24 keypad keys, indexed by astrosession_key. The bottom
+ * row (CE 0 DOT EQ) prints none: those four are the shifts. */
+const astro_overlay_key *astrosession_overlay_layout(void);
+/* The physical key that is the shift (CE green, 0 red, DOT blue, EQ WORDS), or
+ * -1 for ASTRO_SHIFT_NONE; and the shift a key is, or -1 if it is not one. */
+int  astrosession_overlay_shift_key(int shift);
+int  astrosession_overlay_key_shift(int key);
+/* The keypad taps that type a character (a Unicode code point, ASCII only;
+ * lower case types the capital; Enter = GO, Backspace = ERASE, space = SPACE)
+ * or a BASIC word ("PRINT", case-insensitive; the gold words): written to
+ * keys[] (at most `max`, 2 is enough); returns how many, 0 if the overlay has
+ * no way to type it. Pure: no session. */
+int  astrosession_overlay_sequence(uint32_t codepoint, uint8_t *keys, int max);
+int  astrosession_overlay_word_sequence(const char *word, uint8_t *keys, int max);
+void astrosession_overlay_set(astrosession *s, int on);   /* remembered */
+int  astrosession_overlay_get(astrosession *s);
+/* Frontends toast "Bally BASIC overlay on" when this changes: bumped each time
+ * a cartridge that is a known Bally BASIC interpreter is loaded (and so turns
+ * the overlay on). */
+unsigned astrosession_overlay_auto_generation(astrosession *s);
+/* A character the user typed (a Unicode code point, shift-aware: the character
+ * the key produced). With the overlay on and a keypad sequence for it, queues
+ * the sequence (paced a few frames per press) and returns 1; else returns 0
+ * and nothing happens. Call it for a key astrosession_input_key did not
+ * consume. */
+int  astrosession_type_char(astrosession *s, uint32_t codepoint);
+/* The same for a gold BASIC word: WORDS, then its key. */
+int  astrosession_type_word(astrosession *s, const char *word);
+/* Pending typed presses (for tests and a busy cursor); 0 when idle. */
+int  astrosession_typing_pending(astrosession *s);
 
 #ifdef __cplusplus
 }

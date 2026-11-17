@@ -29,9 +29,10 @@ extern "C" {
  * "bindings" holds in s's settings store. Called once per astrosession_new. */
 void bindings_init(astrosession *s);
 
-/* The target a keysym drives now, or -1. */
+/* The target a keysym drives now, or -1. F9, F11 and F12 are never bound. */
 int bindings_target_for_key(uint32_t keysym);
-/* The target pad input `id` drives for `player`'s pad, or -1. */
+/* The target pad input `id` (a button of astrosession.h's bands) drives for
+ * `player`'s pad, or -1. The knob axis is not a button: see bindings_knob_axis. */
 int bindings_target_for_pad(int player, int id);
 /* The pad axis that sets `player`'s knob, or -1. */
 int bindings_knob_axis(int player);

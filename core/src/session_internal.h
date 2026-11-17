@@ -10,6 +10,7 @@
 #define ASTRO_SESSION_INTERNAL_H
 
 #include <pthread.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "astrosession.h"
@@ -54,6 +55,9 @@ struct astrosession {
     uint8_t *bios;            /* ASTRO_BIOS_SIZE bytes, or NULL */
 
     void *audio;              /* audio_sdl.c state, NULL until started */
+    int pad_restarted;        /* the gamepad thread has run for this session
+                               * before: its next first scan finds the same pads
+                               * again, which is no hot-plug (no toast) */
     int running;
 };
 
@@ -86,6 +90,14 @@ uint8_t *roms_load_bios(struct astrosession *s, int variant);
 int roms_any_available(const struct astrosession *s);
 /* Materialise any embedded BIOS into the ROM directory on first run. */
 void roms_provision_embedded(struct astrosession *s);
+
+/* CRC-32 (the zip/PNG polynomial) of a buffer, as roms.c recognises BIOS images. */
+uint32_t roms_crc32(const uint8_t *data, size_t size);
+
+/* overlay.c: the cartridge about to boot. A known Bally BASIC interpreter turns
+ * the overlay on (and bumps astrosession_overlay_auto_generation). */
+int  overlay_is_basic_cart(const uint8_t *data, size_t size);
+void overlay_cart_loaded(struct astrosession *s, const uint8_t *data, size_t size);
 
 /* audio_sdl.c */
 int  audio_start(struct astrosession *s);

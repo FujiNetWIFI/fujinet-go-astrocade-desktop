@@ -53,6 +53,11 @@ static uint32_t crc32_of(const uint8_t *p, size_t n)
     return ~crc;
 }
 
+uint32_t roms_crc32(const uint8_t *data, size_t size)
+{
+    return crc32_of(data, size);
+}
+
 static uint8_t *read_file(const char *path, size_t want, size_t *got)
 {
     FILE *f = fopen(path, "rb");
