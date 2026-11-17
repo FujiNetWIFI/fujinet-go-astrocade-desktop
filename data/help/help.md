@@ -136,6 +136,12 @@ Player 1 plays from the keyboard:
 
 A key does one thing: giving a key to a new job takes it from the old one.
 
+With the [Bally BASIC overlay](#the-bally-basic-overlay) on, <kbd>Backspace</kbd>
+is **ERASE** (the card's key for deleting the last character) and does not
+reset the game; **Reset Game** stays on its button in the Controllers window and
+in the menu. <kbd>F9</kbd>, <kbd>F11</kbd> and <kbd>F12</kbd> cannot be given to
+a control.
+
 The app keeps these keys for itself:
 
 | Shortcut | Does |
@@ -164,41 +170,93 @@ Key combinations with the Super (Windows) key are the desktop's.
 
 ## Gamepads
 
-Gamepads are picked up as they are plugged in, and can come and go at any
-time. Every pad plays its own player, in the order it was plugged in: up to
-four. The pad's <kbd>A</kbd> button is the trigger and its right stick's
-left and right is the knob; the D-pad or the left stick steers. Other buttons
-and axes can be given jobs in the Controllers window.
+Gamepads, USB or Bluetooth, are picked up as they are plugged in and can come
+and go at any time. A pad the system does not know as a gamepad (a plain
+joystick or an adapter's raw buttons and hat) works too; its buttons and
+hat are named by number in the Controllers window. A toast in the main window
+says when a pad is plugged in or taken out.
+
+Each pad plays a player. **Automatic** gives the pads, in the order they were
+plugged in, to the players that have not been given a pad by hand: the first
+unassigned pad is Player 1, the next Player 2, and so on up to four. Choose
+**Player 1** to **Player 4** for a pad (in the Controllers window or in
+[Input settings](#input-settings)) to put it on a player yourself. A pad that
+is chosen by hand is remembered by its name and ID (setting `pad_assign`) and
+goes back to its player when it is plugged in again, even in a later run.
+Taking a pad out never moves another pad to a different player.
+
+The pad's <kbd>A</kbd> button (South) is the trigger, a trigger axis pulls the
+trigger too, and its right stick's left and right is the knob; the D-pad or the
+left stick steers. Other buttons and axes can be given jobs in the Controllers
+window. There is no analog-stick setting: the stick always steers.
 
 ## Changing the controls
 
 The controls are changed in the Controllers window (<kbd>F9</kbd>): click
-**Map**, click a control (a knob takes an axis), then press the keyboard key or
-the gamepad button to give it. The control's old key or button is taken from it.
-**Defaults** puts every control back. The map is kept in the settings, and only
-what differs from the defaults is written.
+**Map**, click a control (on a dial the left and right knob keys and the
+gamepad axis are picked separately), then press the keyboard key or the gamepad button to give it. The
+control's old key or button is taken from it. **Clear** takes the keys off the
+control you click, **Defaults** puts every control back, and **Show bindings**
+writes each control's key on it. <kbd>Esc</kbd> leaves Map.
+<kbd>F9</kbd>, <kbd>F11</kbd> and <kbd>F12</kbd> cannot be bound. The map is kept
+in the settings, and only what differs from the defaults is written.
+**Reset Controls** in [Input settings](#input-settings) puts everything back.
 
-<!-- context: keypad -->
+<!-- context: controllers -->
 # Controllers window
 
-The Controllers window (<kbd>F9</kbd>) shows the console's 24-key keypad, the
-two system buttons (Reset Game and Reset to CONFIG) and all four hand
-controllers, each with a stick, a trigger and a knob dial, and presses them with
-the mouse. It floats at a fixed size, and stays hidden rather than closed. The
-controls that are held light up in the accent colour, whoever holds them: the
-keyboard, a gamepad or the mouse, so it is also an input tester. The dials show
-the live knob.
+The Controllers window (<kbd>F9</kbd>) is the console's top as it is: the 24-key
+keypad on its champagne plate with the gold operator column, four black pistol
+grips (Player 1 to 4), each with a trigger, eight stick wedges and a ribbed
+knob dial, and the **Reset Game** and **Reset to CONFIG** buttons. It floats at
+a fixed size, and stays hidden rather than closed. The controls that are held
+light up in the accent colour, whoever holds them: the keyboard, a gamepad or
+the mouse, so it is also an input tester. The dials show the live knob.
 
 | With the mouse | Does |
 |---|---|
-| Press a control | Holds it for as long as the button is down |
+| Press a key or trigger | Holds it while the button is down |
+| Press a wedge or the ring | Tilts the grip that way |
+| Drag on a dial | Turns the knob to the point |
+| Scroll on a dial | Nudges the knob |
 | Drag off a control | Lets it go |
+
+Under the controllers a row for each gamepad says which player it plays:
+**Automatic** or **Player 1** to **Player 4** (see [Gamepads](#gamepads)).
+**Map**, **Clear**, **Defaults** and **Show bindings** change the controls (see
+[Changing the controls](#changing-the-controls)), and the **Overlay: Bally
+BASIC** check box turns the overlay on.
 
 The console reads its controls once a frame, so a control is *held*, not
 pulsed: a value present for an instant falls between frames and a polling game
 would never see it. Keys typed in the Controllers window go to the console too.
-**Map** and **Defaults** change the controls (see
-[Changing the controls](#changing-the-controls)).
+
+## The Bally BASIC overlay
+
+Bally BASIC (and Astro BASIC) are typed on the keypad with a printed card laid
+over it. Check **Overlay: Bally BASIC** and the keypad plate becomes that card:
+each key shows its legend (the number, or GO, HALT, SPACE, ERASE), the **gold
+word** that WORDS and the key type (PRINT, GOTO, RUN, ...), and the letters and
+signs of the **green**, **red** and **blue** shifts. The bottom row are the
+shifts: green, red and blue, and WORDS in gold.
+
+To type a letter, tap its shift and then the key under it: tapping red, then
+CH, types an H. The shift is *tapped*, never held. The overlay does this for
+you: while it is on, **the keyboard types BASIC**. Press H and the window taps
+red and CH; digits, letters, signs, <kbd>Enter</kbd> (GO) and <kbd>Backspace</kbd>
+(ERASE) all work, one character per press. A key bound to the stick, the
+trigger, the knob or the console keeps its job, and so does Ctrl+key.
+The window pauses a little after ERASE and GO, which the BASIC needs to redraw
+and run a line.
+
+BASIC's words are typed as WORDS and a key (WORDS, then + is PRINT), not letter
+by letter; type those with the keys on the card, or on a Mac pick the word from
+**Machine ▸ Type Bally BASIC Word**.
+
+The overlay turns itself on when a Bally BASIC (`bbasic`) or Astro BASIC
+(`astrobas`) cartridge is opened, and says so in the main window. Other BASIC
+cartridges do not turn it on by themselves: check the box. The choice is
+remembered (setting `overlay_bally_basic`).
 
 # Machines
 
@@ -329,11 +387,25 @@ The ROMs page lists the three BIOS files and whether each is imported:
   BIOS (ballyhlc.bin)** and **Bally Computer System BIOS (bioswhit.bin)**: each
   shows *Imported* or *Not imported*.
 
+<!-- context: prefs/Input -->
+## Input settings
+
+- **Enable gamepads**: whether gamepads are looked for. Applied when Preferences
+  closes (setting `enable_gamepad`).
+- **Gamepads**: every pad that is connected, each with the player it plays:
+  **Automatic**, or **Player 1** to **Player 4**. A change applies at once and is
+  remembered (setting `pad_assign`; see [Gamepads](#gamepads)).
+- **Reset Controls**: puts every key and gamepad button back to its default.
+- **Open Controllers**: opens the [Controllers window](#controllers-window),
+  where the controls are changed.
+
 ## The settings file
 
 The settings file is `settings.ini` (see [Files and folders](#files-and-folders)).
 Each setting above names its key. The others are `cart` (the opened cartridge,
-empty for CONFIG) and `bindings` (the controls that differ from the defaults).
+empty for CONFIG), `bindings` (the controls that differ from the defaults),
+`overlay_bally_basic` (the Bally BASIC overlay), `controllers_show_bindings`
+(Show bindings) and `pad_assign` (the gamepads given to a player by hand).
 
 # Debugger
 

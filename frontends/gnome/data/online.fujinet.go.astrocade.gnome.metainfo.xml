@@ -8,8 +8,10 @@
   <description>
     <p>
       A Bally Astrocade with FujiNet built in: boots straight into FujiNet's
-      config client, with a clickable keypad window standing in for the
-      console's 24-key keypad so every key can be driven with a mouse.
+      config client, with a Controllers window drawn like the console: the
+      24-key keypad and four pistol-grip hand controllers, all driven with a
+      mouse, and USB gamepads assigned to a player. A Bally BASIC overlay shows
+      the printed card on the keypad and types BASIC from the keyboard.
     </p>
     <p>
       Emulation is a MAME-derived Astrocade core (the Z80 CPU, the data-chip

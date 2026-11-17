@@ -25,7 +25,7 @@ static const char *const platform_names[] = { "GNOME", "KDE", "Windows", "macOS"
 
 /* What the frontends' Help buttons and menus open. */
 static const char *const contexts[] = {
-    "main", "nobios", "keypad", "fujilog", "prefs/Machine", "prefs/ROMs",
+    "main", "nobios", "controllers", "fujilog", "prefs/Machine", "prefs/ROMs", "prefs/Input",
     "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/video",
     "debugger/breakpoints", "debugger/watches", "debugger/cart", "debugger/trace",
     "debugger/history", "debugger/fujinet",
@@ -39,11 +39,13 @@ static const char *const labels[] = {
     "Viper System 1 (16K)", "Lil' WHITE RAM (32K)", "R&L 64K", "Import", "Import a Folder",
     "Bally Professional Arcade BIOS (astro.bin)", "Bally Home Library Computer BIOS (ballyhlc.bin)",
     "Bally Computer System BIOS (bioswhit.bin)", "Imported", "Not imported",
+    "Enable gamepads", "Gamepads", "Automatic", "Player 1", "Player 4", "Reset Controls", "Open Controllers",
 };
 
 /* The settings keys the pages write. */
 static const char *const settings_keys[] = {
     "bios", "exp", "fujinet_external", "fujinet_external_addr", "cart", "bindings",
+    "enable_gamepad", "pad_assign", "overlay_bally_basic", "controllers_show_bindings",
 };
 
 /* The app's shortcuts, as a PC and as a Mac shows them. */
@@ -166,6 +168,29 @@ check_controls(int p)
         require(p, "default-keys", "shortcut", platforms[p] == ASTROHELP_MACOS ? shortcuts[k].mac : shortcuts[k].pc);
 }
 
+/* The Controllers window: its buttons, the pad rows and the Bally BASIC overlay. */
+static void
+check_controllers(int p)
+{
+    static const char *const window[] = { "Map", "Clear", "Defaults", "Show bindings", "Reset Game",
+                                          "Reset to CONFIG", "Automatic", "Player 1", "Player 4",
+                                          "Overlay: Bally BASIC" };
+    static const char *const overlay[] = { "WORDS", "ERASE", "GO", "HALT", "green", "red", "blue", "gold",
+                                           "Backspace", "bbasic", "astrobas", "overlay_bally_basic",
+                                           "Type Bally BASIC Word" };
+    static const char *const pads[] = { "pad_assign", "Automatic", "Player 1", "no analog-stick" };
+
+    for (size_t k = 0; k < sizeof window / sizeof *window; k++)
+        require(p, "controllers-window", "button", window[k]);
+    for (size_t k = 0; k < sizeof overlay / sizeof *overlay; k++)
+        require(p, "the-bally-basic-overlay", "overlay", overlay[k]);
+    for (size_t k = 0; k < sizeof pads / sizeof *pads; k++)
+        require(p, "gamepads", "gamepad", pads[k]);
+    require(p, "changing-the-controls", "binding", "F11");
+    require(p, "changing-the-controls", "binding", "F12");
+    require(p, "changing-the-controls", "binding", "Show bindings");
+}
+
 /* The two ports, in the FujiNet topic. */
 static void
 check_ports(int p)
@@ -245,6 +270,7 @@ main(void)
     for (int p = 0; p < 4; p++) {
         check_prefs(p);
         check_controls(p);
+        check_controllers(p);
         check_ports(p);
         check_debugger(p);
     }

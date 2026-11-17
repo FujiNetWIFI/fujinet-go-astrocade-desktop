@@ -25,11 +25,21 @@ milestone-by-milestone log.
   The bundled CONFIG client browses hosts end-to-end through the cart against a
   live TNFS host.
 - **Frontends** — GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), Windows (Win32/
-  GDI) and macOS (AppKit), each with the emulator display, the 24-key keypad
-  window (gold column, RESET / RESET TO CONFIG), a debugger exposing every Z80
-  and video-chip register and every FujiBus packet the cart exchanges with
-  FujiNet, gamepad hand controllers, ROM import, and a FujiNet console-log
-  viewer. Config pages open in the system browser.
+  GDI) and macOS (AppKit), each with the emulator display, a Controllers window
+  (F9; the 24-key keypad on its champagne plate with the gold column, four
+  pistol-grip hand controllers, RESET / Reset to CONFIG), a debugger exposing
+  every Z80 and video-chip register and every FujiBus packet the cart exchanges
+  with FujiNet, ROM import, and a FujiNet console-log viewer. Config pages open
+  in the system browser.
+- **Controllers** — USB and Bluetooth gamepads (mapped or plain joysticks) are
+  assigned to a player: Automatic, or Player 1-4 by hand, remembered by the
+  pad's name and ID (`pad_assign`), with a toast on plug and unplug. Every
+  control is remappable (Map, Clear, Defaults, Show bindings; F9/F11/F12 are
+  never bindable); Preferences has an Input page. The **Bally BASIC overlay**
+  (a check box in the Controllers window, on by itself for the `bbasic` and
+  `astrobas` cartridges) draws the printed card on the keypad and types BASIC
+  from the host keyboard as shift-and-key taps (Backspace is ERASE while it is
+  on). Set `ASTRO_OPEN_CONTROLLERS=1` to open the window at launch.
 - **Built-in Help** — **Help ▸ FujiNet Go Astrocade Help** (Ctrl+Shift+H, ⌘?
   on a Mac) opens a searchable Help, and the Help buttons in Preferences, the
   Controllers window, the debugger and the console log open the topic for what
