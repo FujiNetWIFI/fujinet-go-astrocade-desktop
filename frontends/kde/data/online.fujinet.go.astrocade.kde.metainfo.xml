@@ -46,6 +46,16 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.11.0" date="2026-11-16">
+      <description>
+        <p>
+          macOS: the picture is drawn with Metal in step with the display, so it is smoother on 60 and 120 Hz screens; the emulator runs with game-grade scheduling priority; and the app opts into macOS Game Mode when it is full screen.
+        </p>
+        <p>
+          Full screen (View menu, Control-Command-F) is now available on macOS.
+        </p>
+      </description>
+    </release>
     <release version="0.10.1" date="2026-11-13">
       <description>
         <p>
