@@ -27,6 +27,7 @@
     astrosession *_session;
     NSWindow *_window;
     DisplayView *_display;
+    id<NSObject> _activity;          /* no App Nap, no timer coalescing while we run */
     NSView *_noBios;
 }
 
@@ -41,6 +42,13 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)note
 {
     (void)note;
+
+    /* An emulator is latency-critical work: App Nap must not throttle the
+     * machine thread or coalesce its timers when the window is behind
+     * another, and Game Mode (Info.plist) asks the system to favour it. */
+    _activity = [[NSProcessInfo processInfo]
+        beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+                          reason:@"Emulating an Astrocade"];
     NSRect frame = NSMakeRect(0, 0, 800, 650);
     _window = [[NSWindow alloc]
         initWithContentRect:frame
@@ -49,6 +57,8 @@
                     backing:NSBackingStoreBuffered
                       defer:NO];
     _window.title = @"FujiNet Go Astrocade";
+    /* Full screen is where Game Mode (Info.plist) engages. */
+    _window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
     [_window center];
 
     /* the picture and the No-BIOS page share the content view; one shows */
@@ -183,6 +193,11 @@
                                    keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey]];
     dbgItem.target = self;
     dbgItem.keyEquivalentModifierMask = 0;
+    [view addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *fsItem = [view addItemWithTitle:@"Enter Full Screen"
+                                         action:@selector(toggleFullScreen:)
+                                  keyEquivalent:@"f"];
+    fsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagControl;
     viewItem.submenu = view;
 
     NSMenuItem *fnItem = [[NSMenuItem alloc] init];
@@ -382,6 +397,10 @@
 {
     (void)note;
     [_display stop];
+    if (_activity) {
+        [[NSProcessInfo processInfo] endActivity:_activity];
+        _activity = nil;
+    }
     astrosession_stop(_session);
 }
 

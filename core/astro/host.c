@@ -21,6 +21,13 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <pthread/qos.h>
+#endif
+
 #if defined(_WIN32)
 #include <windows.h>
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
@@ -346,6 +353,38 @@ static void pacing_end(void)
         s_period_set = 0;
     }
 }
+#elif defined(__APPLE__)
+/* macOS paces the way a game does: the machine thread asks the scheduler for
+ * a real-time slot (THREAD_TIME_CONSTRAINT_POLICY) -- one frame period, a few
+ * milliseconds of work, preemptible -- so a busy desktop or a power-saving core
+ * does not make a frame late. QOS_CLASS_USER_INTERACTIVE goes first and stays
+ * as the fallback if the kernel refuses. */
+static mach_timebase_info_data_t s_tb;
+
+static uint64_t ns_to_mach(uint64_t ns)
+{
+    if (s_tb.denom == 0)
+        mach_timebase_info(&s_tb);
+    return ns * s_tb.denom / s_tb.numer;
+}
+
+static void pacing_begin(void)
+{
+    const long frame_ns =
+        (long)(1e9 * (double)ASTRO_DOTS_PER_FRAME / ASTRO_DOT_CLOCK_HZ + 0.5);
+    thread_time_constraint_policy_data_t p;
+
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    p.period = (uint32_t)ns_to_mach((uint64_t)frame_ns);
+    p.computation = (uint32_t)ns_to_mach(5000000ULL);       /* ~5 ms of work */
+    p.constraint = (uint32_t)ns_to_mach((uint64_t)frame_ns);
+    p.preemptible = 1;
+    mach_port_t self = mach_thread_self();
+    thread_policy_set(self, THREAD_TIME_CONSTRAINT_POLICY,
+                      (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+    mach_port_deallocate(mach_task_self(), self);
+}
+static void pacing_end(void) {}
 #else
 static void pacing_begin(void) {}
 static void pacing_end(void) {}
@@ -375,11 +414,12 @@ static void sleep_until(const struct timespec *next, const struct timespec *now)
     struct timespec rel = { remain / 1000000000L, remain % 1000000000L };
     nanosleep(&rel, NULL);
 #elif defined(__APPLE__)
+    /* An absolute deadline on the mach clock: no drift between reading the
+     * time and starting the sleep, which a relative nanosleep has. */
     long remain = ts_diff_ns(next, now);
     if (remain <= 0)
         return;
-    struct timespec rel = { remain / 1000000000L, remain % 1000000000L };
-    nanosleep(&rel, NULL);
+    mach_wait_until(mach_absolute_time() + ns_to_mach((uint64_t)remain));
 #else
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, next, NULL);
     (void)now;

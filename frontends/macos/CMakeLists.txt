@@ -38,6 +38,7 @@ target_link_libraries(fujinet-go-astrocade-macos PRIVATE
   "-framework Cocoa"
   "-framework CoreVideo"
   "-framework QuartzCore"
+  "-framework Metal"        # the picture is a texture on a CAMetalLayer
 )
 target_include_directories(fujinet-go-astrocade-macos PRIVATE
                            "${CMAKE_CURRENT_SOURCE_DIR}"
