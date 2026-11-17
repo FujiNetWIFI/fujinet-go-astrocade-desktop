@@ -8,10 +8,13 @@
 #include "astrosession.h"
 
 @interface SettingsWindow : NSObject
-/* imported runs after a BIOS is imported from the ROMs tab; closed when the
- * window closes, dirty when a machine setting changed (restart). */
+/* imported runs after a BIOS is imported from the ROMs tab; controls runs from
+ * the Input tab (YES: open the Controllers window, NO: the default controls
+ * were restored); closed when the window closes, dirty when a machine setting
+ * changed (restart). */
 + (void)showForSession:(astrosession *)session
               romsPage:(BOOL)romsPage
               imported:(void (^)(void))imported
+              controls:(void (^)(BOOL open))controls
                 closed:(void (^)(BOOL dirty))closed;
 @end

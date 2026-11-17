@@ -8,6 +8,9 @@
  *  ROMs -- what fujinet-go-msdos-desktop's ROMs page is: a note on where the
  *      BIOS comes from and where it is kept, Import… and Import a Folder…,
  *      and each BIOS, imported or not.
+ *  Input -- Enable gamepads (applies when the window closes), each gamepad's
+ *      player (Automatic or Player 1 to 4, at once), Reset Controls and Open
+ *      Controllers. Keys and buttons are re-mapped in the Controllers window.
  *
  * NOT BUILT OR RUN-VERIFIED on macOS in this environment (no Cocoa toolchain
  * here) -- transposed from the verified GNOME/KDE/Win32 Preferences, to be
@@ -21,6 +24,8 @@
 #import "help/HelpWindow.h"
 
 #include <string.h>
+
+#include "bindings.h"
 
 #define WIN_W 560
 #define WIN_H 360
@@ -40,8 +45,13 @@ static SettingsWindow *g_shown;
     NSTextField *_externalField;
     NSMutableArray<NSTextField *> *_romStates;
     void (^_imported)(void);
+    void (^_controls)(BOOL);
     void (^_closed)(BOOL);
     BOOL _dirty;
+    NSPopUpButton *_padList;
+    NSPopUpButton *_padPlayer;
+    NSTimer *_padTimer;
+    unsigned _padGeneration;
 }
 
 static NSTextField *label(NSString *text, NSRect frame)
@@ -264,16 +274,134 @@ static NSTextField *label(NSString *text, NSRect frame)
     return v;
 }
 
+/* ---- the Input page ---- */
+
+/* The connected gamepads and the player the chosen one is set to. */
+- (void)refreshPadList
+{
+    const NSInteger keep = _padList.indexOfSelectedItem;
+    const int count = astrosession_gamepad_count(_session);
+    _padGeneration = astrosession_gamepad_generation(_session);
+    [_padList removeAllItems];
+    for (int idx = 0; idx < count; idx++) {
+        char name[128];
+        name[0] = '\0';
+        astrosession_gamepad_name(_session, idx, name, (int)sizeof name);
+        /* through the menu: addItemWithTitle: drops an item of the same title */
+        [[_padList menu] addItemWithTitle:@(name) action:nil keyEquivalent:@""];
+    }
+    if (count == 0)
+        [[_padList menu] addItemWithTitle:@"No gamepads connected" action:nil keyEquivalent:@""];
+    _padList.enabled = count > 0;
+    _padPlayer.enabled = count > 0;
+    [_padList selectItemAtIndex:keep >= 0 && keep < count ? keep : 0];
+    [self padSelected:_padList];
+}
+
+- (void)padSelected:(id)sender
+{
+    (void)sender;
+    const NSInteger sel = _padList.indexOfSelectedItem;
+    int assign = -1;
+    if (sel >= 0 && sel < astrosession_gamepad_count(_session))
+        assign = astrosession_gamepad_assignment(_session, (int)sel);
+    [_padPlayer selectItemAtIndex:assign < 0 || assign >= ASTROSESSION_PLAYERS ? 0 : assign + 1];
+}
+
+- (void)padPlayerChanged:(id)sender
+{
+    (void)sender;
+    const NSInteger sel = _padList.indexOfSelectedItem;
+    if (sel >= 0 && sel < astrosession_gamepad_count(_session))
+        astrosession_gamepad_assign(_session, (int)sel, (int)_padPlayer.indexOfSelectedItem - 1);
+}
+
+/* Enable gamepads: the pad thread starts or stops with the session. */
+- (void)padsToggled:(NSButton *)box
+{
+    const int on = [box state] == NSControlStateValueOn;
+    if (astrosession_get_int(_session, "enable_gamepad", 1) != on) {
+        astrosession_set_int(_session, "enable_gamepad", on);
+        _dirty = YES;
+    }
+}
+
+- (void)resetControls:(id)sender
+{
+    (void)sender;
+    bindings_reset_defaults(_session);
+    if (_controls) _controls(NO);
+}
+
+- (void)openControllers:(id)sender
+{
+    (void)sender;
+    if (_controls) _controls(YES);
+}
+
+- (NSView *)inputPage
+{
+    NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, WIN_W - 40, WIN_H - 80)];
+    const CGFloat top = NSHeight(v.frame), w = NSWidth(v.frame);
+    NSButton *enable = [NSButton checkboxWithTitle:@"Enable gamepads" target:self action:@selector(padsToggled:)];
+    [enable setFrame:NSMakeRect(16, top - 40, w - 32, 20)];
+    [enable setState:astrosession_get_int(_session, "enable_gamepad", 1)
+                         ? NSControlStateValueOn : NSControlStateValueOff];
+    [v addSubview:enable];
+    [v addSubview:label(@"Gamepad", NSMakeRect(16, top - 74, 120, 20))];
+    _padList = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(140, top - 78, 230, 26) pullsDown:NO];
+    _padList.target = self;
+    _padList.action = @selector(padSelected:);
+    [v addSubview:_padList];
+    _padPlayer = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(378, top - 78, 124, 26) pullsDown:NO];
+    [_padPlayer addItemsWithTitles:@[@"Automatic", @"Player 1", @"Player 2", @"Player 3", @"Player 4"]];
+    _padPlayer.target = self;
+    _padPlayer.action = @selector(padPlayerChanged:);
+    [v addSubview:_padPlayer];
+    NSButton *reset = [NSButton buttonWithTitle:@"Reset Controls" target:self action:@selector(resetControls:)];
+    [reset setFrame:NSMakeRect(16, top - 122, 130, 28)];
+    [v addSubview:reset];
+    NSButton *open = [NSButton buttonWithTitle:@"Open Controllers" target:self action:@selector(openControllers:)];
+    [open setFrame:NSMakeRect(152, top - 122, 150, 28)];
+    [v addSubview:open];
+    NSTextField *note = [NSTextField wrappingLabelWithString:
+        @"Keys and gamepad buttons are re-mapped in the Controllers window (View > Controllers, "
+        @"Cmd+K or F9): click Map, choose a control, then press the key or the gamepad button. "
+        @"Reset Controls puts the defaults back. Turning gamepads on or off applies when this "
+        @"window is closed; the player a gamepad plays applies at once."];
+    [note setFrame:NSMakeRect(16, top - 214, w - 32, 76)];
+    [note setTextColor:[NSColor secondaryLabelColor]];
+    [v addSubview:note];
+    return v;
+}
+
+/* Hot-plugged gamepads, twice a second, while the window is open. */
+- (void)startPadTimer
+{
+    __weak SettingsWindow *weakSelf = self;
+    _padTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *tmr) {
+        (void)tmr;
+        SettingsWindow *strong = weakSelf;
+        if (strong && astrosession_gamepad_generation(strong->_session) != strong->_padGeneration)
+            [strong refreshPadList];
+    }];
+    _padTimer.tolerance = 0.25;
+}
+
 /* Help's context: the page that shows */
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
 {
     (void)tabView;
-    AstroSetHelpContext(_window, [item.identifier isEqual:@"roms"] ? @"prefs/ROMs" : @"prefs/Machine");
+    NSString *context = @"prefs/Machine";
+    if ([item.identifier isEqual:@"roms"]) context = @"prefs/ROMs";
+    else if ([item.identifier isEqual:@"input"]) context = @"prefs/Input";
+    AstroSetHelpContext(_window, context);
 }
 
 + (void)showForSession:(astrosession *)session
               romsPage:(BOOL)romsPage
               imported:(void (^)(void))imported
+              controls:(void (^)(BOOL open))controls
                 closed:(void (^)(BOOL dirty))closed
 {
     if (g_shown) {
@@ -283,6 +411,7 @@ static NSTextField *label(NSString *text, NSRect frame)
     SettingsWindow *s = [[SettingsWindow alloc] init];
     s->_session = session;
     s->_imported = [imported copy];
+    s->_controls = [controls copy];
     s->_closed = [closed copy];
     /* fixed size: titled and closable, never resizable */
     s->_window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, WIN_W, WIN_H)
@@ -301,6 +430,10 @@ static NSTextField *label(NSString *text, NSRect frame)
     item.label = @"ROMs";
     item.view = [s romsPage];
     [s->_tabs addTabViewItem:item];
+    item = [[NSTabViewItem alloc] initWithIdentifier:@"input"];
+    item.label = @"Input";
+    item.view = [s inputPage];
+    [s->_tabs addTabViewItem:item];
     [s->_window.contentView addSubview:s->_tabs];
     {
         NSButton *helpBtn = AstroHelpButton(nil);
@@ -310,6 +443,8 @@ static NSTextField *label(NSString *text, NSRect frame)
         AstroSetHelpContext(s->_window, @"prefs/Machine");
     }
     [s refresh];
+    [s refreshPadList];
+    [s startPadTimer];
     if (romsPage)
         [s->_tabs selectTabViewItemWithIdentifier:@"roms"];
     [s tabView:s->_tabs didSelectTabViewItem:s->_tabs.selectedTabViewItem];
@@ -321,6 +456,8 @@ static NSTextField *label(NSString *text, NSRect frame)
 - (void)windowWillClose:(NSNotification *)note
 {
     (void)note;
+    [_padTimer invalidate];
+    _padTimer = nil;
     astrosession_settings_flush(_session);
     void (^closed)(BOOL) = _closed;
     const BOOL dirty = _dirty;

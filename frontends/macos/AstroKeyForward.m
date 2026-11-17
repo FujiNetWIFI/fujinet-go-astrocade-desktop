@@ -7,7 +7,7 @@
 
 #include "bindings.h"
 
-BOOL AstroControllersMapKey(uint32_t keysym);   /* keypad/KeypadWindow.m */
+BOOL AstroControllersMapKey(uint32_t keysym);   /* controllers/ControllersWindow.m */
 
 uint32_t AstroKeysymFromEvent(NSEvent *event)
 {
@@ -24,6 +24,19 @@ BOOL AstroForwardKeyEvent(astrosession *session, NSEvent *event, int down)
         return NO;
     r = astrosession_input_key(session, ks, down,
                                (event.modifierFlags & NSEventModifierFlagControl) != 0) != 0;
+    /* With the Bally BASIC overlay on, a key the table did not consume types
+     * the character it produced (shift-aware: the event's characters, not the
+     * physical key) as the shift and key presses that make it. */
+    if (down && !r && astrosession_overlay_get(session) &&
+        !(event.modifierFlags & (NSEventModifierFlagControl | NSEventModifierFlagOption))) {
+        NSString *chars = event.characters;
+        if (chars.length) {
+            const unichar cp = [chars characterAtIndex:0];
+            /* the arrows and function keys arrive as private-use characters */
+            if (!(cp >= 0xF700 && cp <= 0xF8FF))
+                r = astrosession_type_char(session, cp) != 0;
+        }
+    }
     astrosession_sysaction_drain(session);
     return r;
 }

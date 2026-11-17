@@ -1,6 +1,6 @@
 /*
  * AppDelegate -- the main window (DisplayView, or the No-BIOS page until a
- * BIOS is imported), the app menu, the keypad window, Settings, and the
+ * BIOS is imported), the app menu, the Controllers window, Settings, and the
  * FujiNet/BIOS actions. The BIOS import looks and acts as
  * fujinet-go-msdos-desktop's does. NOT RUN-VERIFIED on macOS in this
  * environment; transposed from the verified GNOME/KDE/Win32 frontends to be
@@ -21,7 +21,9 @@
 #include <stdlib.h>
 
 #include "bindings.h"
-#import "keypad/KeypadWindow.h"
+#import "controllers/ControllersWindow.h"
+
+#define TOAST_SECONDS 2.5
 
 @implementation AppDelegate {
     astrosession *_session;
@@ -29,6 +31,13 @@
     DisplayView *_display;
     id<NSObject> _activity;          /* no App Nap, no timer coalescing while we run */
     NSView *_noBios;
+    AstroControllersWindow *_controllers;
+    NSTextField *_toast;             /* over the picture, fades */
+    unsigned _toastGeneration;       /* the pad generation already toasted */
+    unsigned _overlayGeneration;     /* the overlay auto-on already toasted */
+    NSUInteger _toastSerial;
+    NSTimer *_sysactTimer;           /* console actions a gamepad posted, toasts */
+    id _keyMonitor;                  /* F9 in the machine window */
 }
 
 - (instancetype)initWithSession:(astrosession *)session
@@ -70,7 +79,21 @@
     _noBios = [self buildNoBios:content.bounds];
     [content addSubview:_noBios];
     _window.contentView = content;
+    /* layer-backed, so the display's layer and the toast over it composite in
+     * the order they were added */
+    content.wantsLayer = YES;
+    [self buildToast:content];
     [_display start];
+
+    __weak AppDelegate *weakSelf = self;
+    _controllers = [[AstroControllersWindow alloc] initWithSession:_session
+                                                           appKeys:^BOOL(uint32_t keysym) {
+        return [weakSelf handleAppKey:keysym];
+    }];
+    _controllers.sysactionHandler = ^(int sysact) { [weakSelf runSysaction:sysact]; };
+    /* No toast for the pads already attached at launch. */
+    _toastGeneration = astrosession_gamepad_generation(_session);
+    _overlayGeneration = astrosession_overlay_auto_generation(_session);
 
     [self buildMenu];
     [self showPage];
@@ -78,6 +101,29 @@
     [NSApp activateIgnoringOtherApps:YES];
     if (getenv("ASTRO_OPEN_DEBUGGER"))
         [DebuggerWindow showDebuggerForSession:_session];
+    if (getenv("ASTRO_OPEN_CONTROLLERS"))
+        [_controllers toggle];
+
+    /* Console actions a gamepad posted, pads coming and going and the overlay
+     * turning itself on: well inside 50 ms. */
+    _sysactTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+        repeats:YES block:^(NSTimer *tmr) { (void)tmr; [weakSelf sysactTick]; }];
+    _sysactTimer.tolerance = 0.01;
+
+    /* F9 in the machine window opens the Controllers panel (the panel handles
+     * its own F9; the debugger keeps F9 for breakpoints). */
+    _keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+        handler:^NSEvent *(NSEvent *evt) {
+            AppDelegate *strong = weakSelf;
+            if (strong && evt.window == strong->_window && !evt.isARepeat &&
+                !(evt.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+                                       NSEventModifierFlagOption | NSEventModifierFlagShift)) &&
+                astrosession_keysym_from_macos_keycode(evt.keyCode) == ASTROSESSION_KEYSYM_F9) {
+                [strong->_controllers toggle];
+                return nil;
+            }
+            return evt;
+        }];
 }
 
 /* In place of the picture until a BIOS is imported. */
@@ -175,6 +221,7 @@
     NSMenu *machine = [[NSMenu alloc] initWithTitle:@"Machine"];
     [machine addItemWithTitle:@"Open Cartridge…"
                        action:@selector(openCart:) keyEquivalent:@"o"].target = self;
+    [machine addItem:[self basicWordsItem]];
     [machine addItem:[NSMenuItem separatorItem]];
     [machine addItemWithTitle:@"Import BIOS…"
                        action:@selector(importBios:) keyEquivalent:@""].target = self;
@@ -185,7 +232,7 @@
     NSMenuItem *viewItem = [[NSMenuItem alloc] init];
     [menubar addItem:viewItem];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
-    [view addItemWithTitle:@"Controllers" action:@selector(toggleKeypad:) keyEquivalent:@"k"].target = self;
+    [view addItemWithTitle:@"Controllers" action:@selector(toggleControllers:) keyEquivalent:@"k"].target = self;
     /* F12 toggles the debugger (Cmd+K is Controllers). A menu key equivalent is
      * tried before the display view's keyDown, so the key never reaches the
      * machine; the debugger window's own key monitor takes F12 there. */
@@ -300,6 +347,16 @@
     [SettingsWindow showForSession:_session
                           romsPage:NO
                           imported:^{ [weakSelf showPage]; }
+                          controls:^(BOOL open) {
+                              AppDelegate *strong = weakSelf;
+                              if (!strong) return;
+                              if (open) {
+                                  [strong->_controllers show];
+                              } else {
+                                  [strong->_controllers refresh];
+                                  [strong showToast:@"Default controls restored"];
+                              }
+                          }
                             closed:^(BOOL dirty) {
                                 if (dirty) [weakSelf restartSession];
                                 else [weakSelf startMachine];
@@ -307,8 +364,8 @@
 }
 
 - (void)toggleDebugger:(id)sender { (void)sender; [DebuggerWindow toggleDebuggerForSession:_session]; }
-- (void)resetGame:(id)sender { (void)sender; astrosession_reset_game(_session); }
-- (void)resetConfig:(id)sender { (void)sender; astrosession_reset_to_config(_session); }
+- (void)resetGame:(id)sender { (void)sender; [self runSysaction:ASTROSESSION_SYSACT_RESET_GAME]; }
+- (void)resetConfig:(id)sender { (void)sender; [self runSysaction:ASTROSESSION_SYSACT_RESET_CONFIG]; }
 
 - (void)fujinetConfig:(id)sender
 {
@@ -383,10 +440,132 @@
 
 /* ---- Controllers window ---- */
 
-- (void)toggleKeypad:(id)sender
+- (void)toggleControllers:(id)sender
 {
     (void)sender;
-    [AstroControllers toggleForSession:_session];
+    [_controllers toggle];
+}
+
+/* The toast: a label over the top of the picture that fades. */
+- (void)buildToast:(NSView *)content
+{
+    _toast = [NSTextField labelWithString:@""];
+    _toast.font = [NSFont boldSystemFontOfSize:13];
+    _toast.textColor = NSColor.whiteColor;
+    _toast.drawsBackground = YES;
+    _toast.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.7];
+    _toast.alignment = NSTextAlignmentCenter;
+    _toast.alphaValue = 0.0;
+    [_toast setFrame:NSMakeRect(0, content.bounds.size.height - 34, content.bounds.size.width, 26)];
+    [_toast setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+    [content addSubview:_toast];
+}
+
+- (void)showToast:(NSString *)text
+{
+    if (!text) return;
+    _toast.stringValue = text;
+    _toast.alphaValue = 1.0;
+    const NSUInteger serial = ++_toastSerial;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TOAST_SECONDS * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        /* a newer message restarts the clock */
+        if (serial != self->_toastSerial) return;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.5;
+            self->_toast.animator.alphaValue = 0.0;
+        } completionHandler:nil];
+    });
+}
+
+/* A console action (ASTROSESSION_SYSACT_*) run on the UI thread, from the
+ * panel, a menu or a gamepad button (a bound key runs its action inside the
+ * session). */
+- (void)runSysaction:(int)sysact
+{
+    switch (sysact) {
+    case ASTROSESSION_SYSACT_RESET_GAME:
+        astrosession_sysaction_fire(_session, ASTROSESSION_SYSACT_RESET_GAME);
+        [self showToast:@"Game reset"];
+        break;
+    case ASTROSESSION_SYSACT_RESET_CONFIG:
+        astrosession_sysaction_fire(_session, ASTROSESSION_SYSACT_RESET_CONFIG);
+        [self showToast:@"Reset to CONFIG"];
+        break;
+    case ASTROSESSION_SYSACT_DEBUG_STOP:
+        astrosession_sysaction_fire(_session, ASTROSESSION_SYSACT_DEBUG_STOP);
+        [DebuggerWindow showDebuggerForSession:_session];
+        break;
+    default:
+        break;
+    }
+}
+
+/* What the 50 ms timer does: the console actions a gamepad button posted (the
+ * pad thread cannot touch AppKit), a toast when a gamepad came or went, and one
+ * when a Bally BASIC cartridge turned the overlay on. */
+- (void)sysactTick
+{
+    const unsigned pending = astrosession_sysaction_take(_session);
+    for (int act = 0; act < ASTROSESSION_SYSACT_COUNT; act++)
+        if (pending & (1u << act)) [self runSysaction:act];
+    const unsigned gen = astrosession_gamepad_generation(_session);
+    if (gen != _toastGeneration) {
+        _toastGeneration = gen;
+        char msg[160];
+        if (astrosession_gamepad_last_event(_session, msg, (int)sizeof msg) > 0)
+            [self showToast:@(msg)];
+    }
+    const unsigned overlay = astrosession_overlay_auto_generation(_session);
+    if (overlay != _overlayGeneration) {
+        _overlayGeneration = overlay;
+        [self showToast:@"Bally BASIC overlay on"];
+    }
+}
+
+/* F9 and F12 are the app's and not bindable; called with a key typed in the
+ * Controllers panel. YES when taken. */
+- (BOOL)handleAppKey:(uint32_t)keysym
+{
+    if (keysym == ASTROSESSION_KEYSYM_F9) {
+        [_controllers toggle];
+        return YES;
+    }
+    if (keysym == ASTROSESSION_KEYSYM_F12) {
+        [DebuggerWindow toggleDebuggerForSession:_session];
+        return YES;
+    }
+    return NO;
+}
+
+/* Machine > Bally BASIC Word: a gold word typed as WORDS and its key. The
+ * overlay's own words, never spelled out letter by letter. */
+- (NSMenuItem *)basicWordsItem
+{
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Type Bally BASIC Word" action:nil keyEquivalent:@""];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Type Bally BASIC Word"];
+    const astro_overlay_key *ov = astrosession_overlay_layout();
+    for (int key = 0; ov && key < ASTROSESSION_KEY_COUNT; key++) {
+        const char *word = ov[key].legend[ASTRO_SHIFT_WORDS];
+        if (!word || !word[0]) continue;
+        NSMenuItem *entry = [menu addItemWithTitle:@(word) action:@selector(typeBasicWord:) keyEquivalent:@""];
+        entry.target = self;
+    }
+    item.submenu = menu;
+    return item;
+}
+
+- (void)typeBasicWord:(NSMenuItem *)sender
+{
+    astrosession_type_word(_session, sender.title.UTF8String);
+}
+
+/* The words are typed only with the overlay on. */
+- (BOOL)validateMenuItem:(NSMenuItem *)item
+{
+    if (item.action == @selector(typeBasicWord:))
+        return astrosession_overlay_get(_session) != 0;
+    return YES;
 }
 
 /* -[NSApplication terminate:] ends in exit(), so [app run] never returns and
@@ -397,6 +576,11 @@
 {
     (void)note;
     [_display stop];
+    [_sysactTimer invalidate];
+    if (_keyMonitor) {
+        [NSEvent removeMonitor:_keyMonitor];
+        _keyMonitor = nil;
+    }
     if (_activity) {
         [[NSProcessInfo processInfo] endActivity:_activity];
         _activity = nil;

@@ -11,7 +11,9 @@
 #include "astrosession.h"
 
 /* Forward a key press or release. YES when the key was consumed. A key typed
- * with Command held is never consumed (a menu equivalent; no key-up arrives). */
+ * with Command held is never consumed (a menu equivalent; no key-up arrives).
+ * With the Bally BASIC overlay on, a press the bindings did not take types the
+ * character it produced (astrosession_type_char). */
 BOOL AstroForwardKeyEvent(astrosession *session, NSEvent *event, int down);
 
 /* Shift, Control, Option and Caps Lock arrive as flagsChanged, not keyDown. */
