@@ -23,7 +23,7 @@ set(KDE_SOURCES
   SoftDisplayWidget.cpp
   FrameFeed.cpp
   KeyForward.cpp
-  keypad/KeypadWindow.cpp
+  controllers/ControllersWindow.cpp
   SettingsDialog.cpp
   help/HelpWindow.cpp
   debugger/DebuggerWindow.cpp
@@ -54,11 +54,11 @@ install(FILES data/${KDE_APP_ID}.desktop
 install(FILES data/${KDE_APP_ID}.metainfo.xml
         DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 
-# The key translation and the Controllers window, on the offscreen platform.
+# The key translation (and the Bally BASIC typing path), on the offscreen
+# platform, against an unstarted session.
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
-  add_executable(keypad_test keypad_test.cpp KeyForward.cpp
-                 keypad/KeypadWindow.cpp help/HelpWindow.cpp)
+  add_executable(keypad_test keypad_test.cpp KeyForward.cpp)
   set_target_properties(keypad_test PROPERTIES CXX_STANDARD 17)
   target_link_libraries(keypad_test PRIVATE astro_session astro_core
                         Qt6::Widgets Qt6::Test m)
@@ -70,6 +70,26 @@ if(Qt6Test_FOUND)
                        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
+# The Controllers window, offscreen, on an SDL virtual gamepad (no machine and
+# no BIOS): skips (77) where SDL has no virtual joysticks. SDL3 is the session
+# library's private dependency, so the test finds it for itself.
+find_package(SDL3 CONFIG QUIET)
+if(Qt6Test_FOUND AND SDL3_FOUND)
+  add_executable(controllers_test_kde controllers_test.cpp controllers/ControllersWindow.cpp
+                 KeyForward.cpp help/HelpWindow.cpp debugger/DebuggerWindow.cpp
+                 debugger/VideoTab.cpp)
+  set_target_properties(controllers_test_kde PROPERTIES CXX_STANDARD 17)
+  target_link_libraries(controllers_test_kde PRIVATE astro_session astro_core
+                        Qt6::Widgets Qt6::GuiPrivate Qt6::Test SDL3::SDL3 m)
+  target_include_directories(controllers_test_kde PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                             "${CMAKE_SOURCE_DIR}/core/src")
+  target_compile_options(controllers_test_kde PRIVATE -Wall -Wextra)
+  add_test(NAME controllers_kde COMMAND controllers_test_kde)
+  set_tests_properties(controllers_kde PROPERTIES
+                       SKIP_RETURN_CODE 77 TIMEOUT 60
+                       ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 # The Debugger window (and F12 from the main window), on the offscreen
 # platform, against a running session whose RAM holds a hand-assembled loop.
 if(Qt6Test_FOUND)
@@ -77,7 +97,7 @@ if(Qt6Test_FOUND)
                  debugger/VideoTab.cpp
                  MainWindow.cpp DisplayWidget.cpp SoftDisplayWidget.cpp
                  FrameFeed.cpp SettingsDialog.cpp KeyForward.cpp
-                 keypad/KeypadWindow.cpp help/HelpWindow.cpp)
+                 controllers/ControllersWindow.cpp help/HelpWindow.cpp)
   set_target_properties(debugger_test PROPERTIES CXX_STANDARD 17)
   target_link_libraries(debugger_test PRIVATE astro_session astro_core
                         Qt6::Widgets Qt6::GuiPrivate Qt6::Test m)

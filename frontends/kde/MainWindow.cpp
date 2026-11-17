@@ -1,6 +1,6 @@
 /*
  * MainWindow -- see MainWindow.h. Menu + display, keyboard capture routed to
- * the console through the bound key table; F9 keypad, F11 fullscreen, F12
+ * the console through the bound key table; F9 Controllers, F11 fullscreen, F12
  * debugger. FujiNet Configuration opens the system browser.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -13,7 +13,7 @@
 #include "DisplayWidget.h"
 #include "SoftDisplayWidget.h"
 #include "KeyForward.h"
-#include "keypad/KeypadWindow.h"
+#include "controllers/ControllersWindow.h"
 #include "SettingsDialog.h"
 #include "help/HelpWindow.h"
 
@@ -61,11 +61,20 @@ MainWindow::MainWindow(astrosession *session, QWidget *parent)
     buildMenus();
     showPage();
     m_display->widget()->setFocus();
-    m_sysactTimer = startTimer(100);
 
-    /* developer affordances, matching the GNOME/Win32 ports */
-    if (getenv("ASTRO_OPEN_KEYPAD"))
-        QTimer::singleShot(0, this, [this] { toggleKeypad(); });
+    /* One timer for the news the other threads leave: the gamepad thread
+     * cannot call into Qt, so it posts console actions and hot-plug events and
+     * this takes them. The baselines keep pads already attached, and an
+     * overlay already on, from announcing themselves. */
+    m_padGen = astrosession_gamepad_generation(session);
+    m_overlayGen = astrosession_overlay_auto_generation(session);
+    connect(&m_tickTimer, &QTimer::timeout, this, &MainWindow::tick);
+    m_tickTimer.start(50);
+
+    /* developer affordances, matching the GNOME/Win32 ports (ASTRO_OPEN_KEYPAD
+     * is the Controllers window's old name) */
+    if (getenv("ASTRO_OPEN_CONTROLLERS") || getenv("ASTRO_OPEN_KEYPAD"))
+        QTimer::singleShot(0, this, [this] { toggleControllers(); });
     if (getenv("ASTRO_OPEN_DEBUGGER"))
         QTimer::singleShot(0, this, [this] { DebuggerWindow::showFor(this, m_session); });
     if (getenv("ASTRO_OPEN_PREFS"))
@@ -184,20 +193,71 @@ void MainWindow::start()
         restartSession();
 }
 
-void MainWindow::toggleKeypad()
+void MainWindow::toggleControllers()
 {
-    if (!m_keypad) m_keypad = new KeypadWindow(m_session, this);
-    m_keypad->setVisible(!m_keypad->isVisible());
+    /* Hidden, not destroyed: a remap in progress and the window's position
+     * both survive closing it. */
+    astroControllersToggle(this, m_session);
+}
+
+void MainWindow::tick()
+{
+    const unsigned posted = astrosession_sysaction_take(m_session);
+    for (int act = 0; act < ASTROSESSION_SYSACT_COUNT; ++act)
+        if (posted & (1u << act))
+            runSysaction(act);
+
+    const unsigned gen = astrosession_gamepad_generation(m_session);
+    if (gen != m_padGen) {
+        m_padGen = gen;
+        char msg[160];
+        if (astrosession_gamepad_last_event(m_session, msg, sizeof msg) > 0)
+            showToast(QString::fromUtf8(msg));
+    }
+    const unsigned overlay = astrosession_overlay_auto_generation(m_session);
+    if (overlay != m_overlayGen) {
+        m_overlayGen = overlay;
+        showToast(QStringLiteral("Bally BASIC overlay on"));
+    }
+}
+
+/* A console action, from a key, a pad button, the Controllers window or the
+ * menu: always here, on the UI thread. */
+void MainWindow::runSysaction(int sysact)
+{
+    switch (sysact) {
+    case ASTROSESSION_SYSACT_RESET_GAME:
+        astrosession_sysaction_fire(m_session, ASTROSESSION_SYSACT_RESET_GAME);
+        showToast("Reset Game");
+        break;
+    case ASTROSESSION_SYSACT_RESET_CONFIG:
+        if (astrosession_reset_to_config(m_session) != 0)
+            showToast(astrosession_last_error(m_session));
+        else
+            showToast("Reset to CONFIG");
+        break;
+    case ASTROSESSION_SYSACT_DEBUG_STOP:
+        astrosession_sysaction_fire(m_session, ASTROSESSION_SYSACT_DEBUG_STOP);
+        DebuggerWindow::showFor(this, m_session);
+        break;
+    default: break;
+    }
 }
 
 /* A changed setting restarts the machine; a BIOS imported there starts it. */
 void MainWindow::showSettings()
 {
-    const bool romsTab = qgetenv("ASTRO_OPEN_PREFS") == "ROMs";
-    if (SettingsDialog::run(this, m_session, [this] { showPage(); }, romsTab))
+    bool openControllers = false;
+    const bool changed = SettingsDialog::run(this, m_session, [this] { showPage(); },
+                                             QString::fromLocal8Bit(qgetenv("ASTRO_OPEN_PREFS")),
+                                             &openControllers);
+    astroControllersRefresh();
+    if (changed)
         restartSession();
     else
         start();
+    if (openControllers)
+        astroControllersShow(this, m_session);
 }
 
 void MainWindow::showToast(const QString &msg)
@@ -229,19 +289,13 @@ void MainWindow::buildMenus()
     machine->addAction("Import BIOS from a &Folder…", this, [this] { importBios(true); });
 
     auto *view = menuBar()->addMenu("&View");
-    view->addAction("Controllers", QKeySequence(Qt::Key_F9), this, [this] { toggleKeypad(); });
+    view->addAction("Controllers", QKeySequence(Qt::Key_F9), this, [this] { toggleControllers(); });
     view->addAction("Debugger", QKeySequence(Qt::Key_F12), this, [this] { DebuggerWindow::toggleFor(this, m_session); });
 
     auto *fujinet = menuBar()->addMenu("&FujiNet");
-    fujinet->addAction("Reset Game", this, [this] {
-        astrosession_reset_game(m_session);
-        showToast("Reset Game");
-    });
-    fujinet->addAction("Reset to CONFIG", QKeySequence("Ctrl+R"), this, [this] {
-        if (astrosession_reset_to_config(m_session) != 0)
-            showToast(astrosession_last_error(m_session));
-        else showToast("Reset to CONFIG");
-    });
+    fujinet->addAction("Reset Game", this, [this] { runSysaction(ASTROSESSION_SYSACT_RESET_GAME); });
+    fujinet->addAction("Reset to CONFIG", QKeySequence("Ctrl+R"), this,
+                       [this] { runSysaction(ASTROSESSION_SYSACT_RESET_CONFIG); });
     fujinet->addAction("FujiNet Configuration…", this, [this] {
         if (astrosession_fujinet_external(m_session)) {
             showToast(QStringLiteral("FujiNet is external: use its own web UI"));
@@ -320,8 +374,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     switch (e->key()) {
     case Qt::Key_F9:
-        if (!m_keypad) m_keypad = new KeypadWindow(m_session, this);
-        m_keypad->setVisible(!m_keypad->isVisible());
+        toggleControllers();
         return;
     case Qt::Key_F11:
         setWindowState(windowState() ^ Qt::WindowFullScreen);
@@ -333,22 +386,15 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         break;
     }
     if (e->isAutoRepeat()) { e->accept(); return; }
-    astroForwardKey(m_session, m_keypad, e, true);
+    astroForwardKey(m_session, e, true);
     e->accept();
 }
 
 void MainWindow::keyReleaseEvent(QKeyEvent *e)
 {
     if (e->isAutoRepeat()) { e->accept(); return; }
-    astroForwardKey(m_session, m_keypad, e, false);
+    astroForwardKey(m_session, e, false);
     e->accept();
-}
-
-void MainWindow::timerEvent(QTimerEvent *ev)
-{
-    if (ev->timerId() != m_sysactTimer)
-        return;
-    astrosession_sysaction_drain(m_session);
 }
 
 /* Keys held into a focus change must not stay down. */
@@ -356,6 +402,6 @@ void MainWindow::changeEvent(QEvent *e)
 {
     QMainWindow::changeEvent(e);
     if (e->type() == QEvent::ActivationChange && !isActiveWindow() &&
-        !(m_keypad && m_keypad->isActiveWindow()))
+        !astroControllersActive())
         astrosession_release_all(m_session);
 }

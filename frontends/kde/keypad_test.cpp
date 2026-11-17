@@ -1,8 +1,11 @@
 /*
- * keypad_test -- the Qt key translation (KeyForward.cpp) and the Controllers
- * window (keypad/KeypadWindow.cpp): fixed floating window, raw press/release,
- * the held highlight, the knob dial, and Map / Clear / Defaults, driven with
- * synthetic events on the offscreen platform against an unstarted session.
+ * keypad_test -- the Qt key translation (KeyForward.cpp): the physical key
+ * becomes the keysym whatever Shift or NumLock say, the app's own keys are
+ * recognised, and the Bally BASIC typing path: with the overlay on a printable
+ * key bound to a keypad key types its character (and Return types GO) instead
+ * of pressing that key, with it off the bindings hold -- driven with synthetic
+ * events on the offscreen platform against an unstarted session. (The
+ * Controllers window has its own test, controllers_test.)
  *
  * Scancodes are evdev + 8, the convention both Qt platform plugins use.
  *
@@ -11,28 +14,24 @@
  */
 
 #include <QKeyEvent>
-#include <QPushButton>
 #include <QTemporaryDir>
 #include <QtTest>
 
 #include "KeyForward.h"
-#include "keypad/KeypadWindow.h"
 
 namespace {
 
 constexpr quint32 kEv = 8;   /* nativeScanCode = evdev code + kEv */
-enum { EV_1 = 2, EV_8 = 9, EV_KP8 = 72, EV_KPENTER = 96, EV_F9 = 67 };
+enum { EV_H = 35, EV_8 = 9, EV_KP8 = 72, EV_KPENTER = 96, EV_ENTER = 28, EV_UP = 103, EV_F9 = 67, EV_F12 = 88 };
 
 QKeyEvent keyEvent(QEvent::Type type, int key, quint32 evdev,
-                   Qt::KeyboardModifiers mods = {}, bool autorepeat = false)
+                   Qt::KeyboardModifiers mods = {}, const QString &text = QString())
 {
-    return QKeyEvent(type, key, mods, evdev ? evdev + kEv : 0, 0, 0, QString(),
-                     autorepeat);
+    return QKeyEvent(type, key, mods, evdev ? evdev + kEv : 0, 0, 0, text, false);
 }
 
-constexpr int TRIGGER = ASTRO_TARGET_PLAYER(0, ASTRO_ACT_TRIGGER);
-constexpr int UP = ASTRO_TARGET_PLAYER(0, ASTRO_ACT_UP);
-constexpr int KNOB = ASTRO_TARGET_PLAYER(0, ASTRO_ACT_KNOB);
+constexpr int KEY_CH = ASTRO_TARGET_KEYPAD + ASTROSESSION_KEY_CH;
+constexpr int KEY_EQ = ASTRO_TARGET_KEYPAD + ASTROSESSION_KEY_EQ;
 
 } // namespace
 
@@ -40,13 +39,6 @@ class KeypadTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_dir;
     astrosession *m_s = nullptr;
-
-    void sendKey(QWidget *w, QEvent::Type t, int key, quint32 evdev,
-                 Qt::KeyboardModifiers m = {})
-    {
-        QKeyEvent e = keyEvent(t, key, evdev, m);
-        QCoreApplication::sendEvent(w, &e);
-    }
 
 private slots:
     void initTestCase()
@@ -74,118 +66,75 @@ private slots:
         QCOMPARE(astroKeysymFromQt(&up), (uint32_t)ASTROSESSION_KEYSYM_UP);
     }
 
-    void windowIsFixedAndFloating()
+    void appKeys()
     {
-        KeypadWindow w(m_s);
-        w.show();
-        QVERIFY(w.windowFlags() & Qt::Dialog);
-        QVERIFY(!w.isVisible() || w.minimumSize() == w.maximumSize() || w.size().isValid());
-        QCOMPARE(w.minimumSize(), w.maximumSize());
+        for (int key : { Qt::Key_F9, Qt::Key_F10, Qt::Key_F11, Qt::Key_F12 }) {
+            QKeyEvent ev = keyEvent(QEvent::KeyPress, key, 0);
+            QVERIFY(astroIsAppKey(&ev));
+        }
+        for (int key : { Qt::Key_F8, Qt::Key_A, Qt::Key_Escape }) {
+            QKeyEvent ev = keyEvent(QEvent::KeyPress, key, 0);
+            QVERIFY(!astroIsAppKey(&ev));
+        }
     }
 
-    void rawPressAndRelease()
+    void boundKeysDriveTheConsole()
     {
-        KeypadWindow w(m_s);
-        w.show();
-        QPushButton *b = w.buttonFor(TRIGGER);
-        QVERIFY(b);
-        QTest::mousePress(b, Qt::LeftButton);
-        QVERIFY(astrosession_target_held(m_s, TRIGGER));
-        QTest::mouseRelease(b, Qt::LeftButton);
-        QVERIFY(!astrosession_target_held(m_s, TRIGGER));
-        /* a keypad key too */
-        QPushButton *seven = w.buttonFor(ASTROSESSION_KEY_7);
-        QTest::mousePress(seven, Qt::LeftButton);
-        QVERIFY(astrosession_target_held(m_s, ASTROSESSION_KEY_7));
-        QTest::mouseRelease(seven, Qt::LeftButton);
-        QVERIFY(!astrosession_target_held(m_s, ASTROSESSION_KEY_7));
+        /* overlay off: 'h' is the CH key */
+        astrosession_overlay_set(m_s, 0);
+        QKeyEvent down = keyEvent(QEvent::KeyPress, Qt::Key_H, EV_H, {}, "h");
+        QVERIFY(astroForwardKey(m_s, &down, true));
+        QVERIFY(astrosession_target_held(m_s, KEY_CH));
+        QKeyEvent up = keyEvent(QEvent::KeyRelease, Qt::Key_H, EV_H, {}, "h");
+        astroForwardKey(m_s, &up, false);
+        QVERIFY(!astrosession_target_held(m_s, KEY_CH));
+        /* and Return is the = key */
+        QKeyEvent ret = keyEvent(QEvent::KeyPress, Qt::Key_Return, EV_ENTER, {}, "\r");
+        QVERIFY(astroForwardKey(m_s, &ret, true));
+        QVERIFY(astrosession_target_held(m_s, KEY_EQ));
+        QKeyEvent retUp = keyEvent(QEvent::KeyRelease, Qt::Key_Return, EV_ENTER, {}, "\r");
+        astroForwardKey(m_s, &retUp, false);
+        QVERIFY(!astrosession_target_held(m_s, KEY_EQ));
     }
 
-    void heldHighlight()
+    void overlayTypesInsteadOfPressing()
     {
-        KeypadWindow w(m_s);
-        w.show();
-        QPushButton *b = w.buttonFor(UP);
-        QVERIFY(!b->styleSheet().contains("#b5342c"));
-        astrosession_input_key(m_s, ASTROSESSION_KEYSYM_UP, 1, 0);   /* the keyboard holds it */
-        QTRY_VERIFY_WITH_TIMEOUT(b->styleSheet().contains("#b5342c"), 1000);
-        astrosession_input_key(m_s, ASTROSESSION_KEYSYM_UP, 0, 0);
-        QTRY_VERIFY_WITH_TIMEOUT(!b->styleSheet().contains("#b5342c"), 1000);
-    }
+        astrosession_overlay_set(m_s, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(astrosession_typing_pending(m_s), 0, 3000);
 
-    void typingInThePanelDrivesTheMachine()
-    {
-        KeypadWindow w(m_s);
-        w.show();
-        sendKey(&w, QEvent::KeyPress, Qt::Key_Up, 103 /* KEY_UP */);
-        QVERIFY(astrosession_target_held(m_s, UP));
-        sendKey(&w, QEvent::KeyRelease, Qt::Key_Up, 103);
-        QVERIFY(!astrosession_target_held(m_s, UP));
-        /* F9 hides it */
-        sendKey(&w, QEvent::KeyPress, Qt::Key_F9, EV_F9);
-        QVERIFY(!w.isVisible());
-    }
+        /* 'h' types H (a shift tap, then the CH key); the CH key itself is not held */
+        QKeyEvent down = keyEvent(QEvent::KeyPress, Qt::Key_H, EV_H, {}, "h");
+        QVERIFY(astroForwardKey(m_s, &down, true));
+        QVERIFY(astrosession_typing_pending(m_s) > 0);
+        QVERIFY(!astrosession_target_held(m_s, KEY_CH));
+        QKeyEvent up = keyEvent(QEvent::KeyRelease, Qt::Key_H, EV_H, {}, "h");
+        astroForwardKey(m_s, &up, false);
+        QTRY_COMPARE_WITH_TIMEOUT(astrosession_typing_pending(m_s), 0, 3000);
 
-    void knobDial()
-    {
-        KeypadWindow w(m_s);
-        w.show();
-        KnobDial *d = w.dialFor(0);
-        d->dragTo(QPointF(d->width() / 2.0, 4));                   /* straight up */
-        QVERIFY(qAbs(astrosession_knob_get(m_s, 0) - 128) <= 1);
-        d->dragTo(QPointF(d->width() - 4, d->height() - 4));       /* lower right */
-        QCOMPARE(astrosession_knob_get(m_s, 0), 255);
-        d->dragTo(QPointF(4, d->height() - 4));                    /* lower left */
-        QCOMPARE(astrosession_knob_get(m_s, 0), 0);
-        astrosession_knob_set(m_s, 0, 128);
-    }
+        /* Shift+1 types '!' (the blue shift, then the 4 key) */
+        QKeyEvent bang = keyEvent(QEvent::KeyPress, Qt::Key_Exclam, 2, Qt::ShiftModifier, "!");
+        QVERIFY(astroForwardKey(m_s, &bang, true));
+        QVERIFY(astrosession_typing_pending(m_s) > 0);
+        QTRY_COMPARE_WITH_TIMEOUT(astrosession_typing_pending(m_s), 0, 3000);
 
-    void mapRebindClearDefaults()
-    {
-        KeypadWindow w(m_s);
-        w.show();
-        auto *mapBtn = w.findChildren<QPushButton *>().at(0);   /* not it: find by text */
-        for (QPushButton *b : w.findChildren<QPushButton *>())
-            if (b->text() == "Map") mapBtn = b;
-        QTest::mouseClick(mapBtn, Qt::LeftButton);
-        QCOMPARE(w.mapTarget(), -1);
+        /* Return types GO, and does not press the = key */
+        QKeyEvent ret = keyEvent(QEvent::KeyPress, Qt::Key_Return, EV_ENTER, {}, "\r");
+        QVERIFY(astroForwardKey(m_s, &ret, true));
+        QVERIFY(astrosession_typing_pending(m_s) > 0);
+        QVERIFY(!astrosession_target_held(m_s, KEY_EQ));
+        QTRY_COMPARE_WITH_TIMEOUT(astrosession_typing_pending(m_s), 0, 3000);
 
-        /* while armed a control click picks, it does not press */
-        QPushButton *seven = w.buttonFor(ASTROSESSION_KEY_7);
-        QTest::mousePress(seven, Qt::LeftButton);
-        QTest::mouseRelease(seven, Qt::LeftButton);
-        QCOMPARE(w.mapTarget(), (int)ASTROSESSION_KEY_7);
-        QVERIFY(!astrosession_target_held(m_s, ASTROSESSION_KEY_7));
+        /* a key bound to the stick keeps its binding, and Ctrl never types */
+        QKeyEvent arrow = keyEvent(QEvent::KeyPress, Qt::Key_Up, EV_UP);
+        QVERIFY(astroForwardKey(m_s, &arrow, true));
+        QCOMPARE(astrosession_typing_pending(m_s), 0);
+        QKeyEvent arrowUp = keyEvent(QEvent::KeyRelease, Qt::Key_Up, EV_UP);
+        astroForwardKey(m_s, &arrowUp, false);
+        QKeyEvent ctrlH = keyEvent(QEvent::KeyPress, Qt::Key_H, EV_H, Qt::ControlModifier, "\b");
+        QVERIFY(!astroForwardKey(m_s, &ctrlH, true));
+        QCOMPARE(astrosession_typing_pending(m_s), 0);
 
-        /* the next key binds: the '1' key, taken from keypad 1 */
-        sendKey(&w, QEvent::KeyPress, Qt::Key_1, EV_1);
-        QCOMPARE(bindings_target_keysym(ASTROSESSION_KEY_7), (uint32_t)'1');
-        QCOMPARE(bindings_target_for_key('1'), (int)ASTROSESSION_KEY_7);
-        QCOMPARE(bindings_target_keysym(ASTROSESSION_KEY_1), (uint32_t)0);
-        QVERIFY(w.hint().contains("was"));
-        QCOMPARE(w.mapTarget(), -1);           /* still armed for the next one */
-
-        /* the knob takes an axis, not a key */
-        w.pickTarget(KNOB);
-        sendKey(&w, QEvent::KeyPress, Qt::Key_X, 45);
-        QCOMPARE(bindings_target_for_key('x'), (int)ASTROSESSION_KEY_MUL);
-        QCOMPARE(w.mapTarget(), KNOB);
-
-        /* Clear unbinds the picked control */
-        w.pickTarget(ASTROSESSION_KEY_7);
-        for (QPushButton *b : w.findChildren<QPushButton *>())
-            if (b->text() == "Clear") QTest::mouseClick(b, Qt::LeftButton);
-        QCOMPARE(bindings_target_keysym(ASTROSESSION_KEY_7), (uint32_t)0);
-
-        /* Defaults restores everything */
-        for (QPushButton *b : w.findChildren<QPushButton *>())
-            if (b->text() == "Defaults") QTest::mouseClick(b, Qt::LeftButton);
-        QCOMPARE(bindings_target_keysym(ASTROSESSION_KEY_7), (uint32_t)'7');
-        QCOMPARE(bindings_target_keysym(ASTROSESSION_KEY_1), (uint32_t)'1');
-
-        /* hiding leaves Map */
-        w.hide();
-        QCOMPARE(w.mapTarget(), -2);
+        astrosession_overlay_set(m_s, 0);
     }
 };
 

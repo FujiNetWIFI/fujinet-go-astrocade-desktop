@@ -7,6 +7,10 @@
 #include "SettingsDialog.h"
 #include "help/HelpWindow.h"
 
+extern "C" {
+#include "bindings.h"
+}
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -22,6 +26,7 @@
 #include <QScrollArea>
 #include <QShortcut>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <vector>
@@ -144,10 +149,50 @@ QWidget *romsPage(State &st)
     return scroll;
 }
 
+/* One row per pad: the player it is set to (applied at once and remembered, so
+ * not part of what OK restarts for) and the player it plays now. */
+void fillPadRows(QFormLayout *form, std::vector<QWidget *> &rows, astrosession *session)
+{
+    for (QWidget *row : rows)
+        form->removeRow(row);
+    rows.clear();
+    const int count = astrosession_gamepad_count(session);
+    if (count == 0) {
+        auto *none = new QLabel(QStringLiteral("No gamepads connected - plug one in: it is picked up as it appears."));
+        none->setWordWrap(true);
+        none->setStyleSheet(kGray);
+        form->addRow(none);
+        rows.push_back(none);
+        return;
+    }
+    for (int idx = 0; idx < count && idx < 8; ++idx) {
+        char name[128];
+        astrosession_gamepad_name(session, idx, name, sizeof name);
+        auto *box = new QComboBox;
+        box->addItems({ QStringLiteral("Automatic"), QStringLiteral("Player 1"), QStringLiteral("Player 2"),
+                        QStringLiteral("Player 3"), QStringLiteral("Player 4") });
+        const int assign = astrosession_gamepad_assignment(session, idx);
+        box->setCurrentIndex(assign < 0 || assign > 3 ? 0 : assign + 1);
+        auto tip = [session, idx](QComboBox *combo) {
+            const int eff = astrosession_gamepad_effective_port(session, idx);
+            combo->setToolTip(eff >= 0 ? QStringLiteral("Playing player %1").arg(eff + 1)
+                                       : QStringLiteral("Playing nobody"));
+        };
+        tip(box);
+        QObject::connect(box, &QComboBox::currentIndexChanged, box, [session, idx, box, tip](int sel) {
+            astrosession_gamepad_assign(session, idx, sel <= 0 ? -1 : sel - 1);
+            tip(box);
+        });
+        form->addRow(QString::fromUtf8(name), box);
+        rows.push_back(box);
+    }
+}
+
 } // namespace
 
 bool SettingsDialog::run(QWidget *parent, astrosession *session,
-                         std::function<void()> imported, bool romsTab)
+                         std::function<void()> imported, const QString &startTab,
+                         bool *openControllers)
 {
     QDialog dlg(parent);
     dlg.setWindowTitle("Preferences");
@@ -191,16 +236,78 @@ bool SettingsDialog::run(QWidget *parent, astrosession *session,
     mv->addStretch(1);
     tabs->addTab(machine, "Machine");
 
+    /* The Input tab: the pads, and the controls' two shortcuts. Keys and
+     * gamepad buttons are re-mapped in the Controllers window (Map). */
+    auto *input = new QWidget;
+    auto *iv = new QVBoxLayout(input);
+    auto *padsBox = new QGroupBox(QStringLiteral("Gamepads"));
+    auto *padsLayout = new QVBoxLayout(padsBox);
+    auto *enablePads = new QCheckBox(QStringLiteral("Enable gamepads (restarts the machine)"));
+    enablePads->setChecked(astrosession_get_int(session, "enable_gamepad", 1) != 0);
+    padsLayout->addWidget(enablePads);
+    auto *padsNote = new QLabel(QStringLiteral(
+        "The first pad plays player 1, the next player 2 and so on, unless one is chosen here."));
+    padsNote->setWordWrap(true);
+    padsNote->setStyleSheet(kGray);
+    padsLayout->addWidget(padsNote);
+    auto *padForm = new QFormLayout;
+    padsLayout->addLayout(padForm);
+    iv->addWidget(padsBox);
+    std::vector<QWidget *> padRows;
+    unsigned padGen = astrosession_gamepad_generation(session);
+    fillPadRows(padForm, padRows, session);
+    auto *padTimer = new QTimer(&dlg);
+    QObject::connect(padTimer, &QTimer::timeout, &dlg, [&] {
+        const unsigned gen = astrosession_gamepad_generation(session);
+        if (gen == padGen) return;
+        padGen = gen;
+        fillPadRows(padForm, padRows, session);
+    });
+    padTimer->start(1000);
+
+    auto *controls = new QGroupBox(QStringLiteral("Controls"));
+    auto *controlsLayout = new QVBoxLayout(controls);
+    auto *controlsNote = new QLabel(QStringLiteral(
+        "Keys and gamepad buttons are re-mapped in the Controllers window (Map)."));
+    controlsNote->setWordWrap(true);
+    controlsNote->setStyleSheet(kGray);
+    controlsLayout->addWidget(controlsNote);
+    auto *controlsRow = new QHBoxLayout;
+    auto *resetControls = new QPushButton(QStringLiteral("Reset Controls"));
+    resetControls->setToolTip(QStringLiteral("Put every key and gamepad button back to its default"));
+    auto *openWindow = new QPushButton(QStringLiteral("Open Controllers"));
+    openWindow->setToolTip(QStringLiteral("Close Preferences and open the Controllers window"));
+    controlsRow->addWidget(resetControls);
+    controlsRow->addWidget(openWindow);
+    controlsRow->addStretch(1);
+    controlsLayout->addLayout(controlsRow);
+    auto *controlsState = new QLabel;
+    controlsLayout->addWidget(controlsState);
+    iv->addWidget(controls);
+    iv->addStretch(1);
+    QObject::connect(resetControls, &QPushButton::clicked, &dlg, [session, controlsState] {
+        bindings_reset_defaults(session);
+        controlsState->setText(QStringLiteral("Every key and gamepad button is back to its default."));
+    });
+    QObject::connect(openWindow, &QPushButton::clicked, &dlg, [&dlg, openControllers] {
+        if (openControllers) *openControllers = true;
+        dlg.accept();
+    });
+    const int inputTab = tabs->addTab(input, "Input");
+
     State st{ &dlg, session, bios, {}, std::move(imported) };
-    tabs->addTab(romsPage(st), "ROMs");
+    const int romsIndex = tabs->addTab(romsPage(st), "ROMs");
     refresh(st);
-    if (romsTab)
-        tabs->setCurrentIndex(1);
+    if (startTab == QLatin1String("ROMs"))
+        tabs->setCurrentIndex(romsIndex);
+    else if (startTab == QLatin1String("Input"))
+        tabs->setCurrentIndex(inputTab);
     outer->addWidget(tabs);
 
     /* Help, F1 and Ctrl+Shift+H (the app's shortcuts don't reach a modal dialog) */
-    auto pageContext = [tabs](int i) {
-        return i == 1 ? QStringLiteral("prefs/ROMs") : QStringLiteral("prefs/Machine");
+    auto pageContext = [inputTab, romsIndex](int i) {
+        return i == romsIndex ? QStringLiteral("prefs/ROMs")
+             : i == inputTab  ? QStringLiteral("prefs/Input") : QStringLiteral("prefs/Machine");
     };
     dlg.setProperty("astroHelpContext", pageContext(tabs->currentIndex()));
     QObject::connect(tabs, &QTabWidget::currentChanged, &dlg,
@@ -233,6 +340,10 @@ bool SettingsDialog::run(QWidget *parent, astrosession *session,
         return false;
 
     bool changed = false;
+    if (enablePads->isChecked() != (astrosession_get_int(session, "enable_gamepad", 1) != 0)) {
+        astrosession_set_int(session, "enable_gamepad", enablePads->isChecked() ? 1 : 0);
+        changed = true;   /* the pad thread starts with the machine */
+    }
     if (bios->currentIndex() != astrosession_get_int(session, "bios",
                                                      ASTROSESSION_BIOS_ASTRO)) {
         astrosession_set_int(session, "bios", bios->currentIndex());

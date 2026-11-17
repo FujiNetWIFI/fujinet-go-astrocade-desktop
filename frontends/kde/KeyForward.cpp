@@ -6,7 +6,6 @@
  */
 
 #include "KeyForward.h"
-#include "keypad/KeypadWindow.h"
 
 uint32_t astroKeysymFromQt(const QKeyEvent *event)
 {
@@ -50,14 +49,41 @@ uint32_t astroKeysymFromQt(const QKeyEvent *event)
     return 0;
 }
 
-bool astroForwardKey(astrosession *session, KeypadWindow *keypad,
-                     QKeyEvent *event, bool down)
+bool astroIsAppKey(const QKeyEvent *event)
+{
+    const int k = event->key();
+    return k >= Qt::Key_F9 && k <= Qt::Key_F12;
+}
+
+/* The printable character a key press produced (Shift and layout aware), or 0. */
+static uint32_t typedCharacter(const QKeyEvent *event)
+{
+    const QString text = event->text();
+    if (text.isEmpty())
+        return 0;
+    const uint32_t cp = text.toUcs4().value(0);
+    return cp >= 0x20 && cp < 0x7f ? cp : 0;
+}
+
+bool astroForwardKey(astrosession *session, QKeyEvent *event, bool down)
 {
     const uint32_t ks = astroKeysymFromQt(event);
-    if (down && keypad && keypad->mapForwardKey(ks))
+    const bool ctrl = event->modifiers().testFlag(Qt::ControlModifier);
+    const bool plain = !ctrl && !event->modifiers().testFlag(Qt::AltModifier) &&
+                       !event->modifiers().testFlag(Qt::MetaModifier);
+
+    /* Return is bound to a keypad key (EQ); with the overlay on it is Enter:
+     * GO, like a printable bound to a keypad key typing its character */
+    const bool enter = ks == ASTROSESSION_KEYSYM_RETURN || ks == ASTROSESSION_KEYSYM_KP_ENTER;
+    if (enter && plain && astrosession_overlay_get(session)) {
+        if (down)
+            astrosession_type_char(session, '\r');
         return true;
-    const bool r = astrosession_input_key(
-        session, ks, down, event->modifiers().testFlag(Qt::ControlModifier)) != 0;
-    astrosession_sysaction_drain(session);
-    return r;
+    }
+
+    const bool consumed = astrosession_input_key(session, ks, down, ctrl) != 0;
+    if (consumed || !down || !plain || !astrosession_overlay_get(session))
+        return consumed;
+    const uint32_t cp = typedCharacter(event);
+    return cp && astrosession_type_char(session, cp);
 }

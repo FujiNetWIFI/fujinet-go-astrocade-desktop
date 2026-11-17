@@ -7,13 +7,13 @@
 #define ASTRO_KDE_MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QTimer>
 
 extern "C" {
 #include "astrosession.h"
 }
 
 class DisplayView;
-class KeypadWindow;
 class QStackedWidget;
 
 class MainWindow : public QMainWindow {
@@ -32,7 +32,10 @@ private:
     void showPage();
     void importBios(bool folder);
     QWidget *buildNoBiosPage();
-    void toggleKeypad();
+    void toggleControllers();
+    /* the news the other threads leave: console actions, hot-plugs, the overlay */
+    void tick();
+    void runSysaction(int sysact);
     void showSettings();
     void showToast(const QString &msg);
     void showFujinetLog();
@@ -42,9 +45,9 @@ private:
     QStackedWidget *m_stack = nullptr;
     QWidget *m_noBios = nullptr;
     DisplayView *m_display = nullptr;
-    KeypadWindow *m_keypad = nullptr;
-    int m_sysactTimer = 0;
-    void timerEvent(QTimerEvent *) override;
+    QTimer m_tickTimer;
+    unsigned m_padGen = 0;
+    unsigned m_overlayGen = 0;
     void changeEvent(QEvent *) override;
 };
 
