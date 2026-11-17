@@ -48,6 +48,16 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.12.0" date="2026-11-17">
+      <description>
+        <p>
+          The Controllers window is redrawn to look like the Bally Astrocade: the champagne keypad in its walnut and black console, and four black pistol-grip controllers with a ribbed knob you can drag or scroll. Held controls light up.
+        </p>
+        <p>
+          New Bally BASIC overlay: tick Overlay: Bally BASIC (it switches on by itself for the Bally BASIC cartridges) to see the legends on the keys and to type BASIC from the host keyboard. USB gamepads can be assigned to Player 1 to 4 and the choice is remembered; a toast shows when a pad is plugged in or removed. There is a new Input page in the settings.
+        </p>
+      </description>
+    </release>
     <release version="0.11.0" date="2026-11-16">
       <description>
         <p>
