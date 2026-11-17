@@ -18,8 +18,11 @@ typedef struct {
     void (*closed)(int dirty);
 } astro_prefs_hooks;
 
-/* Opens (or raises) Preferences; roms_page opens it on the ROMs tab. */
+/* Opens (or raises) Preferences on a page: 0 Machine, 1 ROMs, 2 Input. */
 void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hooks *hooks,
-                      int roms_page);
+                      int page);
+
+/* The gamepad set changed: the Input page's list is rebuilt. */
+void astro_prefs_gamepads_changed(void);
 
 #endif

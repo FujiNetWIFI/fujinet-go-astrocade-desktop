@@ -7,6 +7,10 @@
  *      machine restarts once when the window closes.
  *      A FujiNet box beneath: Use external FujiNet and its address:port. The
  *      address is checked when the window closes; a bad one keeps it open.
+ *  Input -- Enable gamepads (applied by a restart when the window closes), the
+ *      connected pads with the player each drives (Automatic or Player 1-4:
+ *      applied at once and remembered), Reset Controls and Open Controllers.
+ *      Keys and pad buttons are re-mapped in the Controllers window (F9).
  *  ROMs -- what fujinet-go-msdos-desktop's ROMs page is: a note on where the
  *      BIOS comes from and where it is kept, Import... and Import a
  *      Folder..., and a list of each BIOS, imported or not.
@@ -21,6 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bindings.h"
+#include "controllers/controllers_window.h"
 #include "help/help_window.h"
 #include "import.h"
 #include "resource.h"
@@ -36,8 +42,10 @@
 enum {
     ID_TABS = 100, ID_BIOS, ID_EXP, ID_ROM_FILES, ID_ROM_FOLDER, ID_ROM_LIST, ID_CLOSE,
     ID_EXTERNAL, ID_EXT_ADDR, ID_HELP,
+    ID_ENABLE_PADS, ID_PAD_LIST, ID_PAD_PORT, ID_RESET_CONTROLS, ID_OPEN_CONTROLLERS,
 };
-enum { PAGE_MACHINE, PAGE_ROMS };
+enum { PAGE_MACHINE, PAGE_ROMS, PAGE_INPUT };
+#define IDT_PADS 1
 
 /* the layout, in 96-dpi units */
 #define CW 600              /* client width */
@@ -48,6 +56,9 @@ static HWND g_win, g_tabs, g_close, g_help;
 static HWND g_bios_label, g_bios, g_exp_label, g_exp, g_machine_note;
 static HWND g_ext_check, g_ext_label, g_ext_addr, g_ext_note;
 static HWND g_rom_note, g_rom_path, g_rom_files, g_rom_folder, g_rom_list;
+static HWND g_in_enable, g_in_label, g_in_list, g_in_port, g_in_note, g_in_reset, g_in_open;
+static HWND g_parent;
+static unsigned g_pad_seen;
 static HFONT g_font;
 static astrosession *g_session;
 static astro_prefs_hooks g_hooks;
@@ -94,18 +105,57 @@ static void refresh_roms(void)
     fill_bios();
 }
 
+/* The pads, one per line with the player each drives now. */
+static void refresh_pad_list(void)
+{
+    int idx, num, sel;
+    if (!g_in_list) return;
+    sel = (int)SendMessageW(g_in_list, LB_GETCURSEL, 0, 0);
+    SendMessageW(g_in_list, LB_RESETCONTENT, 0, 0);
+    num = astrosession_gamepad_count(g_session);
+    if (num == 0) {
+        SendMessageW(g_in_list, LB_ADDSTRING, 0, (LPARAM)L"(no gamepads connected - plug one in)");
+    }
+    for (idx = 0; idx < num; idx++) {
+        char name[128], line[220];
+        const int effective = astrosession_gamepad_effective_port(g_session, idx);
+        wchar_t *w;
+        astrosession_gamepad_name(g_session, idx, name, sizeof name);
+        if (effective >= 0)
+            snprintf(line, sizeof line, "%s  [player %d%s]", name, effective + 1,
+                     astrosession_gamepad_assignment(g_session, idx) < 0 ? ", automatic" : "");
+        else
+            snprintf(line, sizeof line, "%s  [no player]", name);
+        w = astro_wide_dup(line);
+        if (w) { SendMessageW(g_in_list, LB_ADDSTRING, 0, (LPARAM)w); free(w); }
+    }
+    if (sel >= 0 && sel < num) {
+        SendMessageW(g_in_list, LB_SETCURSEL, (WPARAM)sel, 0);
+        SendMessageW(g_in_port, CB_SETCURSEL, (WPARAM)(astrosession_gamepad_assignment(g_session, sel) + 1), 0);
+    }
+    g_pad_seen = astrosession_gamepad_generation(g_session);
+}
+
+void astro_prefs_gamepads_changed(void)
+{
+    if (g_win) refresh_pad_list();
+}
+
 static void show_page(int page)
 {
     HWND machine[] = { g_bios_label, g_bios, g_exp_label, g_exp, g_machine_note,
                        g_ext_check, g_ext_label, g_ext_addr, g_ext_note };
     HWND roms[] = { g_rom_note, g_rom_path, g_rom_files, g_rom_folder, g_rom_list };
+    HWND input[] = { g_in_enable, g_in_label, g_in_list, g_in_port, g_in_note, g_in_reset, g_in_open };
     g_page = page;
     /* Help, F1 and Ctrl+Shift+H open the page's own */
-    astro_help_set_context(g_win, page == PAGE_ROMS ? "prefs/ROMs" : "prefs/Machine", 1);
+    astro_help_set_context(g_win, page == PAGE_ROMS ? "prefs/ROMs" : page == PAGE_INPUT ? "prefs/Input" : "prefs/Machine", 1);
     for (size_t i = 0; i < sizeof machine / sizeof machine[0]; i++)
         ShowWindow(machine[i], page == PAGE_MACHINE ? SW_SHOW : SW_HIDE);
     for (size_t i = 0; i < sizeof roms / sizeof roms[0]; i++)
         ShowWindow(roms[i], page == PAGE_ROMS ? SW_SHOW : SW_HIDE);
+    for (size_t i = 0; i < sizeof input / sizeof input[0]; i++)
+        ShowWindow(input[i], page == PAGE_INPUT ? SW_SHOW : SW_HIDE);
 }
 
 static void layout(void)
@@ -149,6 +199,18 @@ static void layout(void)
         SendMessageW(g_rom_list, LVM_SETCOLUMNW, 1, (LPARAM)&col);
         col.cx = S(110);
         SendMessageW(g_rom_list, LVM_SETCOLUMNW, 2, (LPARAM)&col);
+    }
+
+    {
+        /* Input */
+        const int px = page.left + S(8), pw = page.right - S(8) - px;
+        MoveWindow(g_in_enable, px, y, pw, S(22), TRUE);
+        MoveWindow(g_in_label, px, y + S(34), pw, S(18), TRUE);
+        MoveWindow(g_in_list, px, y + S(56), pw - S(160), S(112), TRUE);
+        MoveWindow(g_in_port, px + pw - S(150), y + S(56), S(150), S(220), TRUE);
+        MoveWindow(g_in_note, px, y + S(178), pw, S(36), TRUE);
+        MoveWindow(g_in_reset, px, y + S(222), S(130), S(28), TRUE);
+        MoveWindow(g_in_open, px + S(140), y + S(222), S(150), S(28), TRUE);
     }
 
     MoveWindow(g_close, cw - m - S(96), ch - m - S(28), S(96), S(28), TRUE);
@@ -202,6 +264,40 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_EXTERNAL:
             EnableWindow(g_ext_addr, SendMessageW(g_ext_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
             return 0;
+        case ID_ENABLE_PADS: {
+            const int on = SendMessageW(g_in_enable, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (on != (astrosession_get_int(g_session, "enable_gamepad", 1) != 0)) {
+                astrosession_set_int(g_session, "enable_gamepad", on);
+                g_dirty = 1;
+            }
+            return 0;
+        }
+        case ID_PAD_LIST:
+            if (HIWORD(wp) == LBN_SELCHANGE) {
+                const int sel = (int)SendMessageW(g_in_list, LB_GETCURSEL, 0, 0);
+                if (sel >= 0 && sel < astrosession_gamepad_count(g_session))
+                    SendMessageW(g_in_port, CB_SETCURSEL,
+                                 (WPARAM)(astrosession_gamepad_assignment(g_session, sel) + 1), 0);
+            }
+            return 0;
+        case ID_PAD_PORT:
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                const int sel = (int)SendMessageW(g_in_list, LB_GETCURSEL, 0, 0);
+                const int choice = (int)SendMessageW(g_in_port, CB_GETCURSEL, 0, 0);
+                if (sel >= 0 && sel < astrosession_gamepad_count(g_session))
+                    astrosession_gamepad_assign(g_session, sel, choice - 1);
+                refresh_pad_list();
+                astro_controllers_refresh();
+            }
+            return 0;
+        case ID_RESET_CONTROLS:
+            bindings_reset_defaults(g_session);
+            astro_controllers_refresh();
+            SetWindowTextW(g_in_note, L"Every key and gamepad button is back to its default.");
+            return 0;
+        case ID_OPEN_CONTROLLERS:
+            astro_controllers_show(g_parent, g_session);
+            return 0;
         case ID_ROM_FILES:  import_roms(0); return 0;
         case ID_ROM_FOLDER: import_roms(1); return 0;
         case ID_CLOSE:
@@ -218,6 +314,10 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             show_page((int)SendMessageW(g_tabs, TCM_GETCURSEL, 0, 0));
         return 0;
     }
+    case WM_TIMER:
+        if (wp == IDT_PADS && astrosession_gamepad_generation(g_session) != g_pad_seen)
+            refresh_pad_list();
+        return 0;
     case WM_SIZE:
         if (g_tabs) layout();
         return 0;
@@ -258,6 +358,7 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         dirty = g_dirty;
         astrosession_settings_flush(g_session);
+        KillTimer(hwnd, IDT_PADS);
         DestroyWindow(hwnd);
         if (g_hooks.closed)
             g_hooks.closed(dirty);
@@ -275,7 +376,7 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hooks *hooks,
-                      int roms_page)
+                      int page)
 {
     static int registered;
     HINSTANCE inst = GetModuleHandleA(NULL);
@@ -286,6 +387,7 @@ void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hook
         return;
     }
     g_tabs = NULL;
+    g_parent = parent;
     g_session = session;
     g_hooks = *hooks;
     g_dirty = 0;
@@ -315,6 +417,8 @@ void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hook
         SendMessageW(g_tabs, TCM_INSERTITEMW, 0, (LPARAM)&item);
         item.pszText = L"ROMs";
         SendMessageW(g_tabs, TCM_INSERTITEMW, 1, (LPARAM)&item);
+        item.pszText = L"Input";
+        SendMessageW(g_tabs, TCM_INSERTITEMW, 2, (LPARAM)&item);
     }
     g_bios_label = CreateWindowW(L"STATIC", L"System ROM", WS_CHILD, 0, 0, 1, 1, g_win, NULL, inst, NULL);
     g_bios = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
@@ -368,6 +472,31 @@ void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hook
             SendMessageW(g_rom_list, LVM_INSERTCOLUMNW, (WPARAM)i, (LPARAM)&col);
         }
     }
+    g_in_enable = CreateWindowW(L"BUTTON", L"Enable gamepads (applied when this window closes)",
+                                WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 1, 1, g_win,
+                                (HMENU)(INT_PTR)ID_ENABLE_PADS, inst, NULL);
+    SendMessageW(g_in_enable, BM_SETCHECK,
+                 astrosession_get_int(session, "enable_gamepad", 1) ? BST_CHECKED : BST_UNCHECKED, 0);
+    g_in_label = CreateWindowW(L"STATIC", L"Gamepads (select one, then choose the player it drives):",
+                               WS_CHILD | SS_LEFT, 0, 0, 1, 1, g_win, NULL, inst, NULL);
+    g_in_list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                WS_CHILD | WS_VSCROLL | LBS_NOTIFY | WS_TABSTOP, 0, 0, 1, 1, g_win,
+                                (HMENU)(INT_PTR)ID_PAD_LIST, inst, NULL);
+    g_in_port = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+                              0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_PAD_PORT, inst, NULL);
+    {
+        static const wchar_t *const choices[] = { L"Automatic", L"Player 1", L"Player 2", L"Player 3", L"Player 4" };
+        for (int i = 0; i < 5; i++)
+            SendMessageW(g_in_port, CB_ADDSTRING, 0, (LPARAM)choices[i]);
+        SendMessageW(g_in_port, CB_SETCURSEL, 0, 0);
+    }
+    g_in_note = CreateWindowW(L"STATIC",
+        L"Keys, gamepad buttons and the Bally BASIC overlay are set in the Controllers window (F9): "
+        L"Map re-binds, Defaults resets.", WS_CHILD | SS_LEFT, 0, 0, 1, 1, g_win, NULL, inst, NULL);
+    g_in_reset = CreateWindowW(L"BUTTON", L"Reset Controls", WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
+                               0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_RESET_CONTROLS, inst, NULL);
+    g_in_open = CreateWindowW(L"BUTTON", L"Open Controllers", WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
+                              0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_OPEN_CONTROLLERS, inst, NULL);
     g_help = CreateWindowW(L"BUTTON", L"Help", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                            0, 0, 1, 1, g_win, (HMENU)(INT_PTR)ID_HELP, inst, NULL);
     g_close = CreateWindowW(L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
@@ -386,7 +515,10 @@ void astro_prefs_show(HWND parent, astrosession *session, const astro_prefs_hook
     fit_window(NULL);
     layout();
     refresh_roms();
-    SendMessageW(g_tabs, TCM_SETCURSEL, roms_page ? PAGE_ROMS : PAGE_MACHINE, 0);
-    show_page(roms_page ? PAGE_ROMS : PAGE_MACHINE);
+    refresh_pad_list();
+    if (page < PAGE_MACHINE || page > PAGE_INPUT) page = PAGE_MACHINE;
+    SendMessageW(g_tabs, TCM_SETCURSEL, (WPARAM)page, 0);
+    show_page(page);
+    SetTimer(g_win, IDT_PADS, 1000, NULL);
     ShowWindow(g_win, SW_SHOW);
 }

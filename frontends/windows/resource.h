@@ -5,7 +5,7 @@
 
 #define IDM_OPEN_CART      201
 #define IDM_IMPORT_BIOS    202
-#define IDM_KEYPAD         203
+#define IDM_CONTROLLERS    203
 #define IDM_RESET_GAME     204
 #define IDM_RESET_CONFIG   205
 #define IDM_FUJINET_CONFIG 206

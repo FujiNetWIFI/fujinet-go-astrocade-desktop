@@ -5,8 +5,8 @@
  * (Direct3D 11 flip model, presented on vblank from its own thread). Until a
  * BIOS is imported, the No-BIOS page is painted in its place, with the same
  * two buttons fujinet-go-msdos-desktop has. A menu covers cartridge, BIOS
- * import, Preferences, keypad, debugger, resets and FujiNet; the Controllers window
- * (keypad/keypad_window.c) is a fixed-size window of painted controls. FujiNet
+ * import, Preferences, controllers, debugger, resets and FujiNet; the Controllers window
+ * (controllers/controllers_window.c) is a fixed-size window of painted controls. FujiNet
  * Configuration opens the system browser via ShellExecute.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -20,13 +20,12 @@
 #include <stdio.h>
 
 #include "astrosession.h"
-#include "bindings.h"
+#include "controllers/controllers_window.h"
 #include "debugger/dbg_window.h"
 #include "display.h"
 #include "fujilog.h"
 #include "help/help_window.h"
 #include "import.h"
-#include "keypad/keypad_window.h"
 #include "prefs.h"
 #include "resource.h"
 #include "win_common.h"
@@ -37,6 +36,12 @@ static HWND g_bios_files_btn, g_bios_folder_btn, g_bios_help_btn;
 static HFONT g_ui_font, g_title_font;
 static HICON g_big_icon;
 static int g_dpi = 96;
+static unsigned g_pad_generation, g_overlay_generation;
+static DWORD g_notice_until;
+
+#define APP_TITLE "FujiNet Go Astrocade"
+#define NOTICE_MS 4000
+#define IDT_MAIN  1       /* 50 ms: system actions, hot-plug and overlay notices */
 
 #define S(v) astro_scale((v), g_dpi)
 
@@ -168,9 +173,47 @@ static void make_fonts(void)
     if (g_bios_help_btn) SendMessageW(g_bios_help_btn, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
 }
 
-static void toggle_keypad(void)
+static void toggle_controllers(void)
 {
     astro_controllers_toggle(g_hwnd, g_session);
+}
+
+/* A short notice in the title bar (there is no status bar): a gamepad
+ * hot-plug, the overlay switching on. */
+static void notice(const char *text)
+{
+    char title[400];
+    snprintf(title, sizeof title, APP_TITLE " - %s", text);
+    astro_set_text_utf8(g_hwnd, title);
+    g_notice_until = GetTickCount() + NOTICE_MS;
+    if (!g_notice_until) g_notice_until = 1;
+}
+
+static void notice_tick(void)
+{
+    if (!g_notice_until || (LONG)(GetTickCount() - g_notice_until) < 0) return;
+    g_notice_until = 0;
+    SetWindowTextA(g_hwnd, APP_TITLE);
+}
+
+/* The pad thread and the loader bump counters; show what they say. */
+static void poll_notices(void)
+{
+    const unsigned pads = astrosession_gamepad_generation(g_session);
+    const unsigned overlay = astrosession_overlay_auto_generation(g_session);
+    char text[160];
+    if (pads != g_pad_generation) {
+        g_pad_generation = pads;
+        if (astrosession_gamepad_last_event(g_session, text, sizeof text) > 0)
+            notice(text);
+        astro_controllers_refresh();
+        astro_prefs_gamepads_changed();
+    }
+    if (overlay != g_overlay_generation) {
+        g_overlay_generation = overlay;
+        notice("Bally BASIC overlay on");
+        astro_controllers_refresh();
+    }
 }
 
 /* ---- menu / actions ---- */
@@ -195,12 +238,16 @@ static void start_machine(void)
 }
 
 static void prefs_imported(void) { show_page(); }
-static void prefs_closed(int dirty) { if (dirty) restart_session(); else start_machine(); }
+static void prefs_closed(int dirty)
+{
+    if (dirty) restart_session(); else start_machine();
+    astro_controllers_refresh();
+}
 
-static void show_prefs(int roms_page)
+static void show_prefs(int page)
 {
     static const astro_prefs_hooks hooks = { prefs_imported, prefs_closed };
-    astro_prefs_show(g_hwnd, g_session, &hooks, roms_page);
+    astro_prefs_show(g_hwnd, g_session, &hooks, page);
 }
 
 static int open_file(char *out, int outlen, const char *title)
@@ -239,7 +286,7 @@ static void do_command(int id)
             start_machine();
         break;
     case IDM_PREFS:         show_prefs(0); break;
-    case IDM_KEYPAD:        toggle_keypad(); break;
+    case IDM_CONTROLLERS:   toggle_controllers(); break;
     case IDM_DEBUGGER:      astro_debugger_toggle(g_hwnd, g_session); break;
     case IDM_RESET_GAME:    astrosession_reset_game(g_session); break;
     case IDM_RESET_CONFIG:  astrosession_reset_to_config(g_session); break;
@@ -298,7 +345,7 @@ static HMENU build_menu(void)
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)machine, "&Machine");
 
     HMENU view = CreatePopupMenu();
-    AppendMenuA(view, MF_STRING, IDM_KEYPAD, "&Controllers\tF9");
+    AppendMenuA(view, MF_STRING, IDM_CONTROLLERS, "&Controllers\tF9");
     AppendMenuA(view, MF_STRING, IDM_DEBUGGER, "&Debugger\tF12");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)view, "&View");
 
@@ -328,15 +375,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
     case WM_KEYDOWN:
         if (l & 0x40000000)      /* ignore auto-repeat */
             return 0;
-        /* Map mode takes any key, F9 and F12 included */
-        if (astro_controllers_visible() && astro_controllers_key(g_session, l, TRUE))
-            return 0;
-        if (w == VK_F9) { toggle_keypad(); return 0; }
+        /* F9, F11 and F12 are the app's: Map mode never takes them */
+        if (w == VK_F9) { toggle_controllers(); return 0; }
         if (w == VK_F12) { astro_debugger_toggle(g_hwnd, g_session); return 0; }
-        astro_controllers_key(g_session, l, TRUE);
+        astro_controllers_key(g_session, msg, w, l);
         return 0;
     case WM_KEYUP:
-        astro_controllers_key(g_session, l, FALSE);
+        astro_controllers_key(g_session, msg, w, l);
+        return 0;
+    case WM_CHAR:
+        /* typing for the Bally BASIC overlay, unless the key was a control */
+        astro_controllers_char(g_session, w, l);
         return 0;
     case WM_KILLFOCUS:
         /* the key-ups go to whichever window has focus now: let go of
@@ -344,7 +393,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l)
         astrosession_release_all(g_session);
         return 0;
     case WM_TIMER:
-        astrosession_sysaction_drain(g_session);    /* posted from the pad thread */
+        if (w == IDT_MAIN) {
+            astro_controllers_run_sysactions(g_hwnd, g_session);   /* posted from the pad thread */
+            poll_notices();
+            notice_tick();
+        }
         return 0;
     case WM_SIZE:
         layout();
@@ -430,15 +483,19 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     show_page();
 
     ShowWindow(g_hwnd, show);
-    SetTimer(g_hwnd, 1, 50, NULL);   /* drains posted sysactions */
+    g_pad_generation = astrosession_gamepad_generation(g_session);
+    g_overlay_generation = astrosession_overlay_auto_generation(g_session);
+    SetTimer(g_hwnd, IDT_MAIN, 50, NULL);   /* drains posted sysactions */
 
     /* developer affordances, matching the GNOME/KDE ports */
     if (getenv("ASTRO_OPEN_DEBUGGER"))
         astro_debugger_show(g_hwnd, g_session);
-    if (getenv("ASTRO_OPEN_KEYPAD"))
-        toggle_keypad();
-    if (getenv("ASTRO_OPEN_PREFS"))
-        show_prefs(strcmp(getenv("ASTRO_OPEN_PREFS"), "ROMs") == 0);
+    if (getenv("ASTRO_OPEN_CONTROLLERS") || getenv("ASTRO_OPEN_KEYPAD"))
+        toggle_controllers();
+    if (getenv("ASTRO_OPEN_PREFS")) {
+        const char *page = getenv("ASTRO_OPEN_PREFS");
+        show_prefs(strcmp(page, "ROMs") == 0 ? 1 : strcmp(page, "Input") == 0 ? 2 : 0);
+    }
     if (getenv("ASTRO_OPEN_LOG"))
         astro_fujilog_show(g_hwnd, g_session);
 
