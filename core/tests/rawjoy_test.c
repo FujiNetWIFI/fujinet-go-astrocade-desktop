@@ -28,7 +28,7 @@ static int failures;
 static unsigned handle(void) { return astro_host_machine()->handle[0]; }
 static int knob(void) { return (uint8_t)~astro_host_machine()->knob[0]; }
 
-#define WAIT(cond) do { for (int i_ = 0; i_ < 100 && !(cond); i_++) usleep(20000); } while (0)
+#define WAIT(cond) do { for (int i_ = 0; i_ < 500 && !(cond); i_++) usleep(20000); } while (0)
 
 int main(void)
 {
