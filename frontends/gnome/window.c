@@ -1,7 +1,8 @@
 /*
  * AstroWindow: main window of the GNOME frontend. Header bar + menu over the
- * emulator display; keyboard capture routes everything except F9 (keypad
- * window) and F12 (debugger, wired in the debugger milestone) to the console.
+ * emulator display; keyboard capture routes everything except F9 (Controllers
+ * window), F11 (full screen) and F12 (debugger) to the console. The
+ * Controllers window sends its typed keys through astro_window_key too.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -13,10 +14,10 @@
 #include <string.h>
 
 #include "bindings.h"
+#include "controllers/controllers_window.h"
 #include "debugger/dbg_window.h"
 #include "display.h"
 #include "help/help_window.h"
-#include "keypad/keypad_window.h"
 #include "prefs.h"
 
 struct _AstroWindow {
@@ -30,6 +31,8 @@ struct _AstroWindow {
      * sysaction key (Backspace) fires Reset Game once, not ~60x/sec. Cleared
      * on focus loss. */
     guint sysact_timer_id;
+    unsigned pad_generation;       /* the pad set the last toast was for */
+    unsigned overlay_generation;   /* the overlay auto-on the last toast was for */
 };
 
 G_DEFINE_FINAL_TYPE(AstroWindow, astro_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -74,26 +77,153 @@ void astro_window_start(AstroWindow *self)
 
 /* ---- keyboard capture ---------------------------------------------------
  * Everything goes to the machine except the function keys handled in
- * on_key_pressed. Both press and release are forwarded; a missed release
+ * astro_window_key. Both press and release are forwarded; a missed release
  * leaves that keypad key down in the machine. Bindings are resolved through
- * the bound table so a keypad-window "Map" remap takes effect here too. */
+ * the bound table so a Controllers-window "Map" remap takes effect here too. */
 
-/* The one key path every window shares (this one and the Controllers
- * window): Map capture first, then the bindings. The keysym names the
- * PHYSICAL key (evdev = GTK keycode - 8), so NumLock and Shift change
- * nothing. Returns TRUE when the key was consumed. */
-gboolean astro_window_input_key(astrosession *session, guint keycode,
-                                GdkModifierType state, gboolean down)
+/* System actions (RESET GAME, Reset to CONFIG, Stop in Debugger) from a key, a
+ * pad button or the Controllers window, with the same feedback as the Machine
+ * menu. UI thread. */
+void astro_window_run_sysaction(AstroWindow *self, int sysact)
+{
+    switch (sysact) {
+    case ASTROSESSION_SYSACT_RESET_GAME:
+        astrosession_sysaction_fire(self->session, ASTROSESSION_SYSACT_RESET_GAME);
+        astro_window_toast(self, "Reset Game");
+        break;
+    case ASTROSESSION_SYSACT_RESET_CONFIG:
+        if (astrosession_reset_to_config(self->session) != 0)
+            astro_window_toast(self, astrosession_last_error(self->session));
+        else
+            astro_window_toast(self, "Reset to CONFIG");
+        break;
+    case ASTROSESSION_SYSACT_DEBUG_STOP:
+        /* open the debugger first so the stop has somewhere to show */
+        astro_debugger_show(GTK_WINDOW(self), self->session);
+        astrosession_sysaction_fire(self->session, ASTROSESSION_SYSACT_DEBUG_STOP);
+        break;
+    default:
+        break;
+    }
+}
+
+/* Everything posted since the last look (a bound key or a gamepad button posts
+ * it; the gamepad thread cannot call into the toolkit). */
+static void drain_sysactions(AstroWindow *self)
+{
+    unsigned pending = astrosession_sysaction_take(self->session);
+    int act;
+    for (act = 0; act < ASTROSESSION_SYSACT_COUNT; act++)
+        if (pending & (1u << act))
+            astro_window_run_sysaction(self, act);
+}
+
+/* The keycodes whose press was typed (Bally BASIC overlay) and not yet
+ * released: GTK4's key-pressed carries no repeat flag, and a held key must
+ * type once. */
+static guint8 g_typed_down[256 / 8];
+
+/* With the Bally BASIC overlay on, a printable key that no binding took types
+ * its character: the keypad sequence for it is queued in the core. The
+ * character is the one the key produced (Shift applies). */
+static gboolean type_key(AstroWindow *self, guint keyval, guint keycode, GdkModifierType state)
+{
+    guint32 chr;
+
+    if (!astrosession_overlay_get(self->session) ||
+        (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_META_MASK)))
+        return FALSE;
+    switch (keyval) {
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+        chr = '\r';
+        break;
+    case GDK_KEY_BackSpace:
+        chr = 8;
+        break;
+    default:
+        chr = gdk_keyval_to_unicode(keyval);
+        break;
+    }
+    if (chr == 0 || (chr < 0x20 && chr != '\r' && chr != 8))
+        return FALSE;
+    if (keycode < 256) {
+        if (g_typed_down[keycode / 8] & (1u << (keycode % 8)))
+            return TRUE;                /* a repeat of a key already typed */
+        if (astrosession_type_char(self->session, chr))
+            g_typed_down[keycode / 8] |= (guint8)(1u << (keycode % 8));
+        else
+            return FALSE;
+        return TRUE;
+    }
+    return astrosession_type_char(self->session, chr) != 0;
+}
+
+/* The one key path: the main window and the Controllers window both end here,
+ * so Map mode, the bindings, F9 (Controllers), F11, F12 and BASIC typing
+ * behave the same whichever has the focus. The keysym names the PHYSICAL key
+ * (evdev = GTK keycode - 8), so NumLock and Shift change nothing. Returns
+ * whether the key was consumed. */
+gboolean astro_window_key(AstroWindow *self, guint keyval, guint keycode,
+                          GdkModifierType state, gboolean down)
 {
     const uint32_t keysym = astrosession_keysym_from_evdev(keycode >= 8 ? keycode - 8 : 0);
-    gboolean r;
+    const int ctrl = (state & GDK_CONTROL_MASK) != 0;
 
-    if (down && astro_keypad_map_forward_key(keysym))
+    if (!down) {
+        /* A release always reaches the session: it clears exactly what the
+         * press asserted, even if Map mode was armed in between. Map only
+         * keeps the release of the key it took out of the machine's way. */
+        const gboolean released = astrosession_input_key(self->session, keysym, 0, ctrl) != 0;
+        if (keycode < 256)
+            g_typed_down[keycode / 8] &= (guint8)~(1u << (keycode % 8));
+        if (astro_controllers_map_key(keyval, keycode, state, FALSE))
+            return TRUE;
+        return released;
+    }
+
+    /* Map capture, then the bindings (Ctrl chords are the menu's) */
+    if (astro_controllers_map_key(keyval, keycode, state, TRUE))
         return TRUE;
-    r = astrosession_input_key(session, keysym, down,
-                               (state & GDK_CONTROL_MASK) != 0) != 0;
-    astrosession_sysaction_drain(session);
-    return r;
+    if (astrosession_input_key(self->session, keysym, 1, ctrl)) {
+        drain_sysactions(self);
+        return TRUE;
+    }
+
+    /* The window's own keys, deliberately not bindable: they are how you
+     * reach the panels that do the binding. */
+    switch (keyval) {
+    case GDK_KEY_F9:
+        astro_controllers_toggle(GTK_WINDOW(self), self->session);
+        return TRUE;
+    case GDK_KEY_F11:
+        if (gtk_window_is_fullscreen(GTK_WINDOW(self)))
+            gtk_window_unfullscreen(GTK_WINDOW(self));
+        else
+            gtk_window_fullscreen(GTK_WINDOW(self));
+        return TRUE;
+    case GDK_KEY_F12:
+        astro_debugger_toggle(GTK_WINDOW(self), self->session);
+        return TRUE;
+    case GDK_KEY_r:
+    case GDK_KEY_R:
+        if (state & GDK_CONTROL_MASK) {
+            gtk_widget_activate_action(GTK_WIDGET(self), "win.reset-config", NULL);
+            return TRUE;
+        }
+        break;
+    default:
+        break;
+    }
+    return type_key(self, keyval, keycode, state);
+}
+
+/* Lets go of every key the keyboard holds, and stops typing (the mouse's and
+ * the pads' holds are their own sources). */
+void astro_window_release_keys(AstroWindow *self)
+{
+    astrosession_release_all(self->session);
+    memset(g_typed_down, 0, sizeof g_typed_down);
 }
 
 /* The Help context the main window shows now: "nobios" on the No-BIOS page,
@@ -137,69 +267,32 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
         astro_help_for(GTK_WINDOW(self));
         return TRUE;
     }
-
-    /* Map mode takes any key, F9 and F12 included */
-    if (astro_keypad_window_is_visible() &&
-        astro_keypad_map_forward_key(astrosession_keysym_from_evdev(keycode >= 8 ? keycode - 8 : 0)))
-        return TRUE;
-
-    switch (keyval) {
-    case GDK_KEY_F9:
-        astro_keypad_window_toggle(GTK_WINDOW(self), self->session);
-        return TRUE;
-    case GDK_KEY_F11:
-        if (gtk_window_is_fullscreen(GTK_WINDOW(self)))
-            gtk_window_unfullscreen(GTK_WINDOW(self));
-        else
-            gtk_window_fullscreen(GTK_WINDOW(self));
-        return TRUE;
-    case GDK_KEY_F12:
-        astro_debugger_toggle(GTK_WINDOW(self), self->session);
-        return TRUE;
-    case GDK_KEY_r:
-    case GDK_KEY_R:
-        if (state & GDK_CONTROL_MASK) {
-            gtk_widget_activate_action(GTK_WIDGET(self), "win.reset-config",
-                                       NULL);
-            return TRUE;
-        }
-        break;
-    default:
-        break;
-    }
-    return astro_window_input_key(self->session, keycode, state, TRUE);
+    return astro_window_key(self, keyval, keycode, state, TRUE);
 }
 
 static void on_key_released(GtkEventControllerKey *controller, guint keyval,
                             guint keycode, GdkModifierType state,
                             gpointer user_data)
 {
-    AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)controller;
-    if (keyval == GDK_KEY_F9 || keyval == GDK_KEY_F11 || keyval == GDK_KEY_F12)
-        return;
-    if ((keyval == GDK_KEY_r || keyval == GDK_KEY_R) &&
-        (state & GDK_CONTROL_MASK))
-        return;
-    astro_window_input_key(self->session, keycode, state, FALSE);
+    astro_window_key(ASTRO_WINDOW(user_data), keyval, keycode, state, FALSE);
 }
 
 static void on_focus_leave(GtkEventControllerFocus *controller,
                            gpointer user_data)
 {
-    AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)controller;
     /* a held key never gets its release event once focus is gone */
-    astrosession_release_all(self->session);
+    astro_window_release_keys(ASTRO_WINDOW(user_data));
 }
 
 /* ---- actions ------------------------------------------------------------ */
 
-static void action_keypad(GSimpleAction *a, GVariant *p, gpointer user_data)
+static void action_controllers(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
     (void)a; (void)p;
-    astro_keypad_window_toggle(GTK_WINDOW(self), self->session);
+    astro_controllers_toggle(GTK_WINDOW(self), self->session);
 }
 
 static void action_reset_config(GSimpleAction *a, GVariant *p, gpointer user_data)
@@ -486,7 +579,7 @@ static void action_about(GSimpleAction *a, GVariant *p, gpointer user_data)
 }
 
 static const GActionEntry win_actions[] = {
-    {.name = "keypad", .activate = action_keypad},
+    {.name = "controllers", .activate = action_controllers},
     {.name = "reset-game", .activate = action_reset_game},
     {.name = "reset-config", .activate = action_reset_config},
     {.name = "import-bios", .activate = action_import_bios},
@@ -532,7 +625,7 @@ static GMenu *build_menu(void)
     g_menu_append(machine, "Import BIOS from a Folder…", "win.import-bios-folder");
     g_menu_append_section(menu, "Machine", G_MENU_MODEL(machine));
 
-    g_menu_append(view, "Controllers (F9)", "win.keypad");
+    g_menu_append(view, "Controllers (F9)", "win.controllers");
     g_menu_append(view, "Debugger (F12)", "win.debugger");
     g_menu_append_section(menu, "View", G_MENU_MODEL(view));
 
@@ -554,12 +647,28 @@ static GMenu *build_menu(void)
     return menu;
 }
 
-/* Drains sysactions posted from a non-UI thread (the gamepad thread queues
- * RESET_CONFIG so it never joins itself) and fires each on the UI thread. */
+/* Every 50 ms: the console actions the gamepad thread posted (it cannot call
+ * into the toolkit), and a toast when a pad comes or goes or a Bally BASIC
+ * cartridge turns the overlay on. */
 static gboolean sysact_drain_tick(gpointer user_data)
 {
     AstroWindow *self = ASTRO_WINDOW(user_data);
-    astrosession_sysaction_drain(self->session);
+    unsigned gen;
+
+    drain_sysactions(self);
+
+    gen = astrosession_gamepad_generation(self->session);
+    if (gen != self->pad_generation) {
+        char text[160];
+        self->pad_generation = gen;
+        if (astrosession_gamepad_last_event(self->session, text, sizeof text) > 0)
+            astro_window_toast(self, text);
+    }
+    gen = astrosession_overlay_auto_generation(self->session);
+    if (gen != self->overlay_generation) {
+        self->overlay_generation = gen;
+        astro_window_toast(self, "Bally BASIC overlay on");
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -622,12 +731,17 @@ GtkWidget *astro_window_new(AdwApplication *app, astrosession *session)
         gtk_widget_add_controller(GTK_WIDGET(self), focus);
     }
 
-    self->sysact_timer_id = g_timeout_add(100, sysact_drain_tick, self);
+    /* The current pad set and overlay are the baseline: no toast for pads
+     * already plugged in at launch. */
+    self->pad_generation = astrosession_gamepad_generation(session);
+    self->overlay_generation = astrosession_overlay_auto_generation(session);
+    self->sysact_timer_id = g_timeout_add(50, sysact_drain_tick, self);
 
     gtk_widget_grab_focus(GTK_WIDGET(self->display));
 
-    if (getenv("ASTRO_OPEN_KEYPAD"))
-        astro_keypad_window_toggle(GTK_WINDOW(self), session);
+    /* ASTRO_OPEN_KEYPAD is the older name of ASTRO_OPEN_CONTROLLERS. */
+    if (getenv("ASTRO_OPEN_CONTROLLERS") || getenv("ASTRO_OPEN_KEYPAD"))
+        astro_controllers_toggle(GTK_WINDOW(self), session);
     if (getenv("ASTRO_OPEN_DEBUGGER"))
         astro_debugger_show(GTK_WINDOW(self), session);
     if (getenv("ASTRO_OPEN_PREFS"))

@@ -30,10 +30,21 @@ void       astro_window_start(AstroWindow *self);
 GtkFileDialog *astro_file_dialog(const char *title, const char *filter_name,
                                  const char *const *exts);
 
-/* The key path both windows share (Map capture, then the bindings): `keycode`
- * is GTK's hardware keycode. TRUE when the key was consumed. */
-gboolean astro_window_input_key(astrosession *session, guint keycode,
-                                GdkModifierType state, gboolean down);
+/* A system action (ASTROSESSION_SYSACT_*) from a key, a pad button or the
+ * Controllers window's console buttons, with the same feedback as the Machine
+ * menu. UI thread. */
+void astro_window_run_sysaction(AstroWindow *self, int sysact);
+
+/* The one keyboard path: the main window's own key handler and the
+ * Controllers window's both end here, so Map mode, the bindings, F9
+ * (Controllers), F11, F12 and Bally BASIC typing behave the same whichever
+ * has the focus. `keycode` is the GDK hardware keycode. Returns whether the
+ * key was consumed. */
+gboolean astro_window_key(AstroWindow *self, guint keyval, guint keycode,
+                          GdkModifierType state, gboolean down);
+
+/* Lets go of every key the keyboard holds, and stops typing (focus loss). */
+void astro_window_release_keys(AstroWindow *self);
 
 /* main.c */
 const char *astro_icon_name(void);
